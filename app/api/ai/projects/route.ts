@@ -1,6 +1,8 @@
-import { NextResponse } from 'next/server';
 import { authenticateAiRequest } from '@/lib/ai/auth';
+import { aiJson, projectSummary } from '@/lib/ai/serialize';
 import { adminDb } from '@/lib/firebase/admin';
+
+/** Read-only: the projects the configured owner holds. No prose. */
 
 export const dynamic = 'force-dynamic';
 
@@ -16,22 +18,11 @@ export async function GET(req: Request) {
       .where('ownerId', '==', auth.principal.ownerUid)
       .get();
 
-    const projects = snapshot.docs.map((doc) => {
-      const data = doc.data();
-      return {
-        id: doc.id,
-        title: data.title,
-        slug: data.slug,
-        description: data.description,
-        isPublished: data.isPublished,
-        createdAt: data.createdAt,
-        updatedAt: data.updatedAt,
-      };
-    });
+    const projects = snapshot.docs.map((doc) => projectSummary(doc.id, doc.data()));
 
-    return NextResponse.json({ projects });
+    return aiJson({ projects });
   } catch (err) {
     console.error('AI projects listing failed', err);
-    return NextResponse.json({ error: 'Request failed' }, { status: 500 });
+    return aiJson({ error: 'Request failed' }, 500);
   }
 }
