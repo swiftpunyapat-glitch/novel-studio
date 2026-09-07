@@ -46,4 +46,50 @@ describe('Section Types & Numbering Rules', () => {
 
     expect(firstChapterNumber).toBe(1);
   });
+
+  test('regression: chapter numbering is per-volume so Volume 2 starts again at Chapter 1', () => {
+    const chapters: Array<Partial<Chapter>> = [
+      // Volume 1
+      { id: 'v1-prologue', volumeId: 'vol-1', title: 'Prologue', chapterType: 'prologue', chapterNumber: null },
+      { id: 'v1-ch1', volumeId: 'vol-1', title: 'Chapter 1', chapterType: 'chapter', chapterNumber: 1 },
+      { id: 'v1-ch2', volumeId: 'vol-1', title: 'Chapter 2', chapterType: 'chapter', chapterNumber: 2 },
+      { id: 'v1-epilogue', volumeId: 'vol-1', title: 'Epilogue', chapterType: 'epilogue', chapterNumber: null },
+      // Legacy chapter without chapterType in Volume 1
+      { id: 'v1-ch3', volumeId: 'vol-1', title: 'Chapter 3', chapterNumber: 3 },
+
+      // Volume 2 (currently only has a prologue)
+      { id: 'v2-prologue', volumeId: 'vol-2', title: 'Prologue', chapterType: 'prologue', chapterNumber: null },
+    ];
+
+    const getNextChapterNumber = (volumeId: string) => {
+      const maxNum = chapters
+        .filter(
+          (c) =>
+            c.volumeId === volumeId &&
+            resolveChapterType(c as Chapter) === 'chapter' &&
+            c.chapterNumber !== null &&
+            c.chapterNumber !== undefined
+        )
+        .reduce((max, c) => Math.max(max, c.chapterNumber as number), 0);
+      return maxNum + 1;
+    };
+
+    // Volume 1 next chapter number should be 4
+    expect(getNextChapterNumber('vol-1')).toBe(4);
+
+    // Volume 2 next chapter number must start at Chapter 1, despite Volume 1 having 3 chapters
+    expect(getNextChapterNumber('vol-2')).toBe(1);
+
+    // Add Chapter 1 to Volume 2
+    chapters.push({
+      id: 'v2-ch1',
+      volumeId: 'vol-2',
+      title: 'Chapter 1',
+      chapterType: 'chapter',
+      chapterNumber: 1,
+    });
+
+    // Volume 2 next chapter number should now be 2
+    expect(getNextChapterNumber('vol-2')).toBe(2);
+  });
 });

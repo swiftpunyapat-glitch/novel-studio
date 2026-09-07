@@ -33,9 +33,14 @@ export default function ChapterWritingPage() {
   const [variants, setVariants] = useState<DraftVariant[]>([]);
   const [loading, setLoading] = useState(true);
   const [checkpointing, setCheckpointing] = useState(false);
-  const [showDirtySwitchModal, setShowDirtySwitchModal] = useState(false);
-  const [pendingSwitchVariant, setPendingSwitchVariant] = useState<DraftVariant | null>(null);
-  const [switching, setSwitching] = useState(false);
+  const [showUnsavedModal, setShowUnsavedModal] = useState(false);
+  const [pendingTransition, setPendingTransition] = useState<
+    | { type: 'switch'; targetVariant: DraftVariant }
+    | { type: 'create'; name: string }
+    | { type: 'duplicate'; name: string }
+    | null
+  >(null);
+  const [transitioning, setTransitioning] = useState(false);
   const editorRef = useRef<NovelEditorHandle | null>(null);
 
   const loadData = useCallback(async () => {
@@ -67,63 +72,19 @@ export default function ChapterWritingPage() {
     loadData();
   }, [loadData]);
 
-  const handleSelectVariant = (targetVariantId: string) => {
-    if (targetVariantId === variant?.id) return;
-    const target = variants.find((v) => v.id === targetVariantId);
-    if (!target) return;
+  // A transition away from the current variant is safe ONLY when the editor
+  // status is 'saved'. Any other state ('dirty', 'saving', 'offline_pending',
+  // 'conflict', 'error') must be protected by the unsaved confirmation dialog.
+  const isSafeState = () => editorRef.current?.getStatus() === 'saved';
 
-    const isDirty = editorRef.current?.getStatus() === 'dirty';
-    if (isDirty) {
-      setPendingSwitchVariant(target);
-      setShowDirtySwitchModal(true);
-    } else {
-      setVariant(target);
-    }
-  };
-
-  const handleSaveAndSwitch = async () => {
-    if (!pendingSwitchVariant) return;
-    setSwitching(true);
-    try {
-      await editorRef.current?.saveNow();
-      setVariant(pendingSwitchVariant);
-      setShowDirtySwitchModal(false);
-      setPendingSwitchVariant(null);
-    } catch (err) {
-      console.error('Failed to save before switching variant', err);
-    } finally {
-      setSwitching(false);
-    }
-  };
-
-  const handleKeepLocalAndSwitch = async () => {
-    if (!pendingSwitchVariant) return;
-    setSwitching(true);
-    try {
-      await editorRef.current?.flushLocal();
-      setVariant(pendingSwitchVariant);
-      setShowDirtySwitchModal(false);
-      setPendingSwitchVariant(null);
-    } catch (err) {
-      console.error('Failed to flush local mirror before switching variant', err);
-    } finally {
-      setSwitching(false);
-    }
-  };
-
-  const handleCancelSwitch = () => {
-    setShowDirtySwitchModal(false);
-    setPendingSwitchVariant(null);
-  };
-
-  const handleCreateVariant = async (name: string) => {
+  const executeCreateVariant = async (name: string) => {
     if (!projectId || !chapter) return;
     const newVar = await createDraftVariant(projectId, chapter.id, name);
     setVariants((prev) => [...prev, newVar]);
     setVariant(newVar);
   };
 
-  const handleDuplicateVariant = async (name: string) => {
+  const executeDuplicateVariant = async (name: string) => {
     if (!projectId || !chapter || !variant) return;
     const liveSnapshot = editorRef.current?.getSnapshot() ?? undefined;
     const duplicate = await duplicateDraftVariant(
@@ -135,6 +96,110 @@ export default function ChapterWritingPage() {
     );
     setVariants((prev) => [...prev, duplicate]);
     setVariant(duplicate);
+  };
+
+  const executeTransition = async (
+    t:
+      | { type: 'switch'; targetVariant: DraftVariant }
+      | { type: 'create'; name: string }
+      | { type: 'duplicate'; name: string }
+  ) => {
+    if (t.type === 'switch') {
+      setVariant(t.targetVariant);
+    } else if (t.type === 'create') {
+      await executeCreateVariant(t.name);
+    } else if (t.type === 'duplicate') {
+      await executeDuplicateVariant(t.name);
+    }
+  };
+
+  const handleSelectVariant = (targetVariantId: string) => {
+    if (targetVariantId === variant?.id) return;
+    const target = variants.find((v) => v.id === targetVariantId);
+    if (!target) return;
+
+    if (!isSafeState()) {
+      setPendingTransition({ type: 'switch', targetVariant: target });
+      setShowUnsavedModal(true);
+    } else {
+      setVariant(target);
+    }
+  };
+
+  const handleCreateVariant = async (name: string) => {
+    if (!isSafeState()) {
+      setPendingTransition({ type: 'create', name });
+      setShowUnsavedModal(true);
+    } else {
+      await executeCreateVariant(name);
+    }
+  };
+
+  const handleDuplicateVariant = async (name: string) => {
+    if (!isSafeState()) {
+      setPendingTransition({ type: 'duplicate', name });
+      setShowUnsavedModal(true);
+    } else {
+      await executeDuplicateVariant(name);
+    }
+  };
+
+  const handleSaveAndContinue = async () => {
+    if (!pendingTransition) return;
+    setTransitioning(true);
+    try {
+      await editorRef.current?.saveNow();
+      const finalStatus = editorRef.current?.getStatus();
+
+      // Verified save success: switch/continue ONLY when final status is 'saved'.
+      if (finalStatus !== 'saved') {
+        setShowUnsavedModal(false);
+        setPendingTransition(null);
+        if (finalStatus === 'conflict') {
+          alert(
+            'This chapter changed on another device. Please resolve the conflict before continuing.'
+          );
+        } else if (finalStatus === 'offline_pending') {
+          alert(
+            'Offline — saved locally. Press Save when back online, or choose "Keep Local Copy & Continue".'
+          );
+        } else {
+          alert('Save failed. You remain on the current variant so no changes are lost.');
+        }
+        return;
+      }
+
+      await executeTransition(pendingTransition);
+      setShowUnsavedModal(false);
+      setPendingTransition(null);
+    } catch (err) {
+      console.error('Failed to save before variant transition', err);
+      alert('Save failed. You remain on the current variant so no changes are lost.');
+      setShowUnsavedModal(false);
+      setPendingTransition(null);
+    } finally {
+      setTransitioning(false);
+    }
+  };
+
+  const handleKeepLocalAndContinue = async () => {
+    if (!pendingTransition) return;
+    setTransitioning(true);
+    try {
+      await editorRef.current?.flushLocal();
+      await executeTransition(pendingTransition);
+      setShowUnsavedModal(false);
+      setPendingTransition(null);
+    } catch (err) {
+      console.error('Failed to flush local mirror before transition', err);
+    } finally {
+      setTransitioning(false);
+    }
+  };
+
+  const handleCancelTransition = () => {
+    setShowUnsavedModal(false);
+    setPendingTransition(null);
   };
 
   const handleRenameVariant = async (variantId: string, newName: string) => {
@@ -257,18 +322,38 @@ export default function ChapterWritingPage() {
         }}
       />
 
-      {/* Dirty Switch Confirmation Modal */}
-      {showDirtySwitchModal && pendingSwitchVariant && (
+      {/* Unsaved Transition Confirmation Modal */}
+      {showUnsavedModal && pendingTransition && (
         <div className="fixed inset-0 bg-black/50 backdrop-blur-sm z-50 flex items-center justify-center p-4">
           <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl max-w-md w-full p-6 shadow-xl space-y-4">
             <h3 className="text-base font-bold text-slate-900 dark:text-white">
               Unsaved Changes in &ldquo;{variant.name}&rdquo;
             </h3>
             <p className="text-sm text-slate-600 dark:text-slate-400 leading-relaxed">
-              You have unsaved changes in the current draft variant. How would you like to proceed before switching to{' '}
-              <span className="font-semibold text-slate-800 dark:text-slate-200">
-                &ldquo;{pendingSwitchVariant.name}&rdquo;
-              </span>?
+              {pendingTransition.type === 'switch' && (
+                <>
+                  You have unsaved changes in the current draft variant. How would you like to proceed before switching to{' '}
+                  <span className="font-semibold text-slate-800 dark:text-slate-200">
+                    &ldquo;{pendingTransition.targetVariant.name}&rdquo;
+                  </span>?
+                </>
+              )}
+              {pendingTransition.type === 'create' && (
+                <>
+                  You have unsaved changes in the current draft variant. How would you like to proceed before creating{' '}
+                  <span className="font-semibold text-slate-800 dark:text-slate-200">
+                    &ldquo;{pendingTransition.name}&rdquo;
+                  </span>?
+                </>
+              )}
+              {pendingTransition.type === 'duplicate' && (
+                <>
+                  You have unsaved changes in the current draft variant. How would you like to proceed before duplicating into{' '}
+                  <span className="font-semibold text-slate-800 dark:text-slate-200">
+                    &ldquo;{pendingTransition.name}&rdquo;
+                  </span>?
+                </>
+              )}
             </p>
 
             <div className="flex flex-col sm:flex-row justify-end gap-2 pt-2">
@@ -276,8 +361,8 @@ export default function ChapterWritingPage() {
                 type="button"
                 variant="ghost"
                 size="sm"
-                onClick={handleCancelSwitch}
-                disabled={switching}
+                onClick={handleCancelTransition}
+                disabled={transitioning}
               >
                 Cancel
               </Button>
@@ -285,20 +370,26 @@ export default function ChapterWritingPage() {
                 type="button"
                 variant="secondary"
                 size="sm"
-                onClick={handleKeepLocalAndSwitch}
-                disabled={switching}
+                onClick={handleKeepLocalAndContinue}
+                disabled={transitioning}
                 title="Keeps unsynced edits in local browser storage"
               >
-                Keep Local Copy & Switch
+                Keep Local Copy &amp; Continue
               </Button>
               <Button
                 type="button"
                 variant="primary"
                 size="sm"
-                onClick={handleSaveAndSwitch}
-                disabled={switching}
+                onClick={handleSaveAndContinue}
+                disabled={transitioning}
               >
-                {switching ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : 'Save & Switch'}
+                {transitioning ? (
+                  <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                ) : pendingTransition.type === 'switch' ? (
+                  'Save & Switch'
+                ) : (
+                  'Save & Continue'
+                )}
               </Button>
             </div>
           </div>

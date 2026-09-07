@@ -59,7 +59,7 @@ export const VariantSelector: React.FC<VariantSelectorProps> = ({
 
   const handleOpenCreate = () => {
     setDropdownOpen(false);
-    setModalInputName(`Draft ${String.fromCharCode(65 + variants.length)}`);
+    setModalInputName(`Variant ${variants.length + 1}`);
     setModalMode('create');
   };
 
@@ -231,7 +231,7 @@ export const VariantSelector: React.FC<VariantSelectorProps> = ({
                 label="Variant Name"
                 value={modalInputName}
                 onChange={(e) => setModalInputName(e.target.value)}
-                placeholder="e.g. Draft B, Action focus..."
+                placeholder="e.g. Variant 2, Action focus..."
                 autoFocus
                 required
               />

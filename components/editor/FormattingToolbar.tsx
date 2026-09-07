@@ -306,9 +306,9 @@ export const FormattingToolbar: React.FC<FormattingToolbarProps> = ({
           {autosaveStatus === 'offline_pending' && (
             <span
               className="text-amber-600 dark:text-amber-400 flex items-center gap-1 font-sans"
-              title="Offline — saved to this device, will sync when reconnected"
+              title="Offline — saved locally. Press Save when back online."
             >
-              <AlertCircle className="w-3.5 h-3.5" /> Offline — saved locally
+              <AlertCircle className="w-3.5 h-3.5" /> Offline — saved locally. Press Save when back online.
             </span>
           )}
           {autosaveStatus === 'error' && (

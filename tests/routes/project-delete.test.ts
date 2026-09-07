@@ -12,6 +12,8 @@ const PUBLIC_SLUG = 'project-alpha-slug';
 const verifyIdToken = vi.fn();
 const deletedPaths: string[] = [];
 const deletedStoragePrefixes: string[] = [];
+let storageErrorToThrow: Error | null = null;
+let publicDeleteErrorToThrow: Error | null = null;
 
 function makeDb() {
   const docs = new Map<string, Record<string, unknown>>([
@@ -76,6 +78,9 @@ function makeDb() {
     collection: (name: string) => makeCollection(name),
     doc: (path: string) => makeRef(path),
     recursiveDelete: async (ref: any) => {
+      if (publicDeleteErrorToThrow && ref.path.startsWith('publicProjects')) {
+        throw publicDeleteErrorToThrow;
+      }
       deletedPaths.push(`recursive:${ref.path}`);
       for (const key of Array.from(docs.keys())) {
         if (key === ref.path || key.startsWith(`${ref.path}/`)) {
@@ -98,6 +103,9 @@ vi.mock('@/lib/firebase/admin', () => ({
   adminStorage: {
     bucket: () => ({
       deleteFiles: async ({ prefix }: { prefix: string }) => {
+        if (storageErrorToThrow) {
+          throw storageErrorToThrow;
+        }
         deletedStoragePrefixes.push(prefix);
       },
     }),
@@ -117,6 +125,8 @@ beforeEach(() => {
   db = makeDb();
   deletedPaths.length = 0;
   deletedStoragePrefixes.length = 0;
+  storageErrorToThrow = null;
+  publicDeleteErrorToThrow = null;
   verifyIdToken.mockReset();
 });
 
@@ -179,5 +189,31 @@ describe('DELETE /api/projects/[projectId] authorization & cascade', () => {
 
     // Verified recursive project deletion
     expect(deletedPaths).toContain(`recursive:projects/${PROJECT_ID}`);
+  });
+
+  test('fails with 500 and aborts if Storage cleanup fails', async () => {
+    verifyIdToken.mockResolvedValue({ uid: OWNER_UID });
+    storageErrorToThrow = new Error('GCS bucket connection timeout');
+
+    const res = await callDelete(PROJECT_ID, { Authorization: 'Bearer alice_token' });
+    expect(res.status).toBe(500);
+    const body = await res.json();
+    expect(body.error).toMatch(/storage/i);
+
+    // Crucial: The project document was NOT deleted if storage cleanup failed
+    expect(deletedPaths).not.toContain(`recursive:projects/${PROJECT_ID}`);
+  });
+
+  test('fails with 500 and aborts if public snapshot cleanup fails', async () => {
+    verifyIdToken.mockResolvedValue({ uid: OWNER_UID });
+    publicDeleteErrorToThrow = new Error('Firestore publicProjects recursive delete failed');
+
+    const res = await callDelete(PROJECT_ID, { Authorization: 'Bearer alice_token' });
+    expect(res.status).toBe(500);
+    const body = await res.json();
+    expect(body.error).toMatch(/public snapshot/i);
+
+    // Crucial: The project document was NOT deleted if public cleanup failed
+    expect(deletedPaths).not.toContain(`recursive:projects/${PROJECT_ID}`);
   });
 });

@@ -391,7 +391,7 @@ export async function createDraftVariant(
     id: variantRef.id,
     chapterId,
     projectId,
-    name: name.trim() || 'Variant',
+    name: name.trim() || 'Variant 1',
     status: 'draft',
     content: initialContent ?? {
       type: 'doc',

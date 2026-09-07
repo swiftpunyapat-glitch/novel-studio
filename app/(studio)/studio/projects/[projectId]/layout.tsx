@@ -85,17 +85,26 @@ export default function ProjectWorkspaceLayout({ children }: { children: React.R
     setExpandedVolumes((prev) => ({ ...prev, [newVol.id]: true }));
   };
 
-  const getNextChapterNumber = useCallback(() => {
-    const maxNum = chapters
-      .filter((c) => resolveChapterType(c) === 'chapter' && c.chapterNumber !== null && c.chapterNumber !== undefined)
-      .reduce((max, c) => Math.max(max, c.chapterNumber as number), 0);
-    return maxNum + 1;
-  }, [chapters]);
+  const getNextChapterNumber = useCallback(
+    (volumeId: string) => {
+      const maxNum = chapters
+        .filter(
+          (c) =>
+            c.volumeId === volumeId &&
+            resolveChapterType(c) === 'chapter' &&
+            c.chapterNumber !== null &&
+            c.chapterNumber !== undefined
+        )
+        .reduce((max, c) => Math.max(max, c.chapterNumber as number), 0);
+      return maxNum + 1;
+    },
+    [chapters]
+  );
 
   const handleOpenAddSection = (volumeId: string) => {
     setTargetVolumeId(volumeId);
     setSectionType('chapter');
-    const nextNum = getNextChapterNumber();
+    const nextNum = getNextChapterNumber(volumeId);
     setSectionTitle(`Chapter ${nextNum}`);
     setShowAddSectionModal(true);
   };
@@ -107,7 +116,7 @@ export default function ProjectWorkspaceLayout({ children }: { children: React.R
     } else if (newType === 'epilogue') {
       setSectionTitle('Epilogue');
     } else {
-      const nextNum = getNextChapterNumber();
+      const nextNum = targetVolumeId ? getNextChapterNumber(targetVolumeId) : 1;
       setSectionTitle(`Chapter ${nextNum}`);
     }
   };
@@ -120,7 +129,7 @@ export default function ProjectWorkspaceLayout({ children }: { children: React.R
     try {
       const volumeChapters = chapters.filter((c) => c.volumeId === targetVolumeId);
       const order = volumeChapters.length + 1;
-      const chapNum = sectionType === 'chapter' ? getNextChapterNumber() : null;
+      const chapNum = sectionType === 'chapter' ? getNextChapterNumber(targetVolumeId) : null;
 
       const { chapter } = await createChapter(
         projectId,
@@ -364,7 +373,7 @@ export default function ProjectWorkspaceLayout({ children }: { children: React.R
 
               <p className="text-[11px] text-slate-400">
                 {sectionType === 'chapter'
-                  ? `Numbered as Chapter ${getNextChapterNumber()} (increments sequence).`
+                  ? `Numbered as Chapter ${targetVolumeId ? getNextChapterNumber(targetVolumeId) : 1} (in this volume).`
                   : `${sectionType === 'prologue' ? 'Prologue' : 'Epilogue'} has no chapter number.`}
               </p>
 

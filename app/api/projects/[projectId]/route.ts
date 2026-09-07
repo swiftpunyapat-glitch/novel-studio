@@ -28,8 +28,13 @@ export async function DELETE(
     try {
       const bucket = adminStorage.bucket();
       await bucket.deleteFiles({ prefix: `projects/${projectId}/` });
-    } catch (storageErr) {
-      console.warn(`Storage cleanup for project ${projectId} skipped or failed:`, storageErr);
+    } catch (storageErr: unknown) {
+      console.error(`Storage cleanup for project ${projectId} failed:`, storageErr);
+      const msg = storageErr instanceof Error ? storageErr.message : String(storageErr);
+      return NextResponse.json(
+        { error: `Failed to clean up storage files: ${msg}` },
+        { status: 500 }
+      );
     }
 
     // 2. Clean up proven public published documents if any exist
@@ -45,8 +50,13 @@ export async function DELETE(
         await adminDb.recursiveDelete(publicProjRef);
         await slugDoc.ref.delete();
       }
-    } catch (pubErr) {
-      console.warn(`Public snapshot cleanup for project ${projectId} skipped or failed:`, pubErr);
+    } catch (pubErr: unknown) {
+      console.error(`Public snapshot cleanup for project ${projectId} failed:`, pubErr);
+      const msg = pubErr instanceof Error ? pubErr.message : String(pubErr);
+      return NextResponse.json(
+        { error: `Failed to clean up public snapshots: ${msg}` },
+        { status: 500 }
+      );
     }
 
     // 3. Cascade recursive deletion of the private project document and all subcollections
