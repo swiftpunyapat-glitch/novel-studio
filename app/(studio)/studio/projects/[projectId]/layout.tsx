@@ -6,7 +6,7 @@ import { useParams, usePathname } from 'next/navigation';
 import { useAuth } from '@/lib/firebase/auth';
 import { ExportDialog } from '@/components/editor/ExportDialog';
 import { getProject, getVolumes, getChapters, createVolume, createChapter } from '@/lib/firebase/firestore';
-import { Project, Volume, Chapter } from '@/types/project';
+import { Project, Volume, Chapter, ChapterType, resolveChapterType } from '@/types/project';
 import { 
   FolderPlus, 
   FilePlus, 
@@ -21,6 +21,7 @@ import {
   Loader2 
 } from 'lucide-react';
 import { Button } from '@/components/ui/Button';
+import { Input } from '@/components/ui/Input';
 
 export default function ProjectWorkspaceLayout({ children }: { children: React.ReactNode }) {
   const params = useParams();
@@ -35,6 +36,11 @@ export default function ProjectWorkspaceLayout({ children }: { children: React.R
   const [loading, setLoading] = useState(true);
   const [expandedVolumes, setExpandedVolumes] = useState<Record<string, boolean>>({});
   const [exportOpen, setExportOpen] = useState(false);
+  const [showAddSectionModal, setShowAddSectionModal] = useState(false);
+  const [targetVolumeId, setTargetVolumeId] = useState<string | null>(null);
+  const [sectionType, setSectionType] = useState<ChapterType>('chapter');
+  const [sectionTitle, setSectionTitle] = useState('');
+  const [creatingSection, setCreatingSection] = useState(false);
   const { user } = useAuth();
 
   const loadData = useCallback(async () => {
@@ -79,13 +85,60 @@ export default function ProjectWorkspaceLayout({ children }: { children: React.R
     setExpandedVolumes((prev) => ({ ...prev, [newVol.id]: true }));
   };
 
-  const handleAddChapter = async (volumeId: string) => {
-    if (!projectId) return;
-    const volumeChapters = chapters.filter((c) => c.volumeId === volumeId);
-    const chapNum = volumeChapters.length + 1;
-    const title = `Chapter ${chapNum}`;
-    const { chapter } = await createChapter(projectId, volumeId, title, chapNum, chapNum);
-    setChapters((prev) => [...prev, chapter]);
+  const getNextChapterNumber = useCallback(() => {
+    const maxNum = chapters
+      .filter((c) => resolveChapterType(c) === 'chapter' && c.chapterNumber !== null && c.chapterNumber !== undefined)
+      .reduce((max, c) => Math.max(max, c.chapterNumber as number), 0);
+    return maxNum + 1;
+  }, [chapters]);
+
+  const handleOpenAddSection = (volumeId: string) => {
+    setTargetVolumeId(volumeId);
+    setSectionType('chapter');
+    const nextNum = getNextChapterNumber();
+    setSectionTitle(`Chapter ${nextNum}`);
+    setShowAddSectionModal(true);
+  };
+
+  const handleSectionTypeChange = (newType: ChapterType) => {
+    setSectionType(newType);
+    if (newType === 'prologue') {
+      setSectionTitle('Prologue');
+    } else if (newType === 'epilogue') {
+      setSectionTitle('Epilogue');
+    } else {
+      const nextNum = getNextChapterNumber();
+      setSectionTitle(`Chapter ${nextNum}`);
+    }
+  };
+
+  const handleCreateSection = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!projectId || !targetVolumeId || !sectionTitle.trim()) return;
+
+    setCreatingSection(true);
+    try {
+      const volumeChapters = chapters.filter((c) => c.volumeId === targetVolumeId);
+      const order = volumeChapters.length + 1;
+      const chapNum = sectionType === 'chapter' ? getNextChapterNumber() : null;
+
+      const { chapter } = await createChapter(
+        projectId,
+        targetVolumeId,
+        sectionTitle.trim(),
+        chapNum,
+        order,
+        sectionType
+      );
+
+      setChapters((prev) => [...prev, chapter]);
+      setExpandedVolumes((prev) => ({ ...prev, [targetVolumeId]: true }));
+      setShowAddSectionModal(false);
+    } catch (err) {
+      console.error('Failed to create section', err);
+    } finally {
+      setCreatingSection(false);
+    }
   };
 
   if (loading) {
@@ -158,8 +211,8 @@ export default function ProjectWorkspaceLayout({ children }: { children: React.R
                       <span className="truncate">{v.title}</span>
                     </button>
                     <button
-                      onClick={() => handleAddChapter(v.id)}
-                      title="Add Chapter"
+                      onClick={() => handleOpenAddSection(v.id)}
+                      title="Add Section (Prologue, Chapter, Epilogue)"
                       className="opacity-0 group-hover:opacity-100 p-1 text-slate-400 hover:text-indigo-600 rounded transition-opacity"
                     >
                       <FilePlus className="w-3.5 h-3.5" />
@@ -173,6 +226,8 @@ export default function ProjectWorkspaceLayout({ children }: { children: React.R
                       ) : (
                         volChapters.map((chap) => {
                           const isActive = pathname.includes(`/write/${chap.id}`);
+                          const cType = resolveChapterType(chap);
+
                           return (
                             <Link
                               key={chap.id}
@@ -183,7 +238,17 @@ export default function ProjectWorkspaceLayout({ children }: { children: React.R
                                   : 'text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800'
                               }`}
                             >
-                              <FileText className="w-3.5 h-3.5 shrink-0 opacity-70" />
+                              {cType === 'prologue' ? (
+                                <span className="px-1 py-0.2 rounded text-[9px] font-bold uppercase bg-indigo-100 dark:bg-indigo-950/60 text-indigo-700 dark:text-indigo-400 border border-indigo-200 dark:border-indigo-800 shrink-0">
+                                  Prologue
+                                </span>
+                              ) : cType === 'epilogue' ? (
+                                <span className="px-1 py-0.2 rounded text-[9px] font-bold uppercase bg-purple-100 dark:bg-purple-950/60 text-purple-700 dark:text-purple-400 border border-purple-200 dark:border-purple-800 shrink-0">
+                                  Epilogue
+                                </span>
+                              ) : (
+                                <FileText className="w-3.5 h-3.5 shrink-0 opacity-70" />
+                              )}
                               <span className="truncate">{chap.title}</span>
                             </Link>
                           );
@@ -255,6 +320,76 @@ export default function ProjectWorkspaceLayout({ children }: { children: React.R
           getIdToken={() => user.getIdToken()}
           onClose={() => setExportOpen(false)}
         />
+      )}
+
+      {/* Add Section Modal */}
+      {showAddSectionModal && (
+        <div className="fixed inset-0 bg-black/50 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+          <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl max-w-sm w-full p-5 shadow-xl space-y-4">
+            <h3 className="text-base font-bold text-slate-900 dark:text-white">
+              Add Section
+            </h3>
+
+            <form onSubmit={handleCreateSection} className="space-y-4">
+              <div>
+                <label className="block text-xs font-semibold uppercase tracking-wider text-slate-600 dark:text-slate-400 mb-1.5">
+                  Section Type
+                </label>
+                <div className="grid grid-cols-3 gap-1.5 p-1 bg-slate-100 dark:bg-slate-800 rounded-lg text-xs font-medium">
+                  {(['prologue', 'chapter', 'epilogue'] as ChapterType[]).map((type) => (
+                    <button
+                      key={type}
+                      type="button"
+                      onClick={() => handleSectionTypeChange(type)}
+                      className={`py-1.5 rounded capitalize transition-colors ${
+                        sectionType === type
+                          ? 'bg-white dark:bg-slate-900 text-indigo-600 dark:text-indigo-400 shadow-sm font-semibold'
+                          : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
+                      }`}
+                    >
+                      {type}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              <Input
+                label="Section Title"
+                value={sectionTitle}
+                onChange={(e) => setSectionTitle(e.target.value)}
+                placeholder="e.g. Prologue, Chapter 1..."
+                required
+                autoFocus
+              />
+
+              <p className="text-[11px] text-slate-400">
+                {sectionType === 'chapter'
+                  ? `Numbered as Chapter ${getNextChapterNumber()} (increments sequence).`
+                  : `${sectionType === 'prologue' ? 'Prologue' : 'Epilogue'} has no chapter number.`}
+              </p>
+
+              <div className="flex justify-end gap-2 pt-2">
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => setShowAddSectionModal(false)}
+                  disabled={creatingSection}
+                >
+                  Cancel
+                </Button>
+                <Button
+                  type="submit"
+                  variant="primary"
+                  size="sm"
+                  disabled={creatingSection || !sectionTitle.trim()}
+                >
+                  {creatingSection ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : 'Create Section'}
+                </Button>
+              </div>
+            </form>
+          </div>
+        </div>
       )}
 
       {/* Main Content Pane */}

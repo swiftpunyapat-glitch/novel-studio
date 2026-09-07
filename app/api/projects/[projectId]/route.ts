@@ -1,0 +1,64 @@
+import { NextResponse } from 'next/server';
+import {
+  AuthError,
+  requireVerifiedUser,
+  requireProjectOwner,
+  authErrorResponse,
+} from '@/lib/server/auth';
+import { adminDb, adminStorage } from '@/lib/firebase/admin';
+
+export const dynamic = 'force-dynamic';
+
+export async function DELETE(
+  req: Request,
+  { params }: { params: { projectId: string } }
+) {
+  try {
+    const { uid } = await requireVerifiedUser(req);
+    const { projectId } = params;
+
+    if (!projectId || typeof projectId !== 'string' || projectId.includes('/')) {
+      return NextResponse.json({ error: 'Project not found' }, { status: 404 });
+    }
+
+    // Asserts project exists and requester is the owner. Throws 403 or 404 otherwise.
+    await requireProjectOwner(uid, projectId);
+
+    // 1. Delete associated Storage files (character dossiers, reference images)
+    try {
+      const bucket = adminStorage.bucket();
+      await bucket.deleteFiles({ prefix: `projects/${projectId}/` });
+    } catch (storageErr) {
+      console.warn(`Storage cleanup for project ${projectId} skipped or failed:`, storageErr);
+    }
+
+    // 2. Clean up proven public published documents if any exist
+    try {
+      const matchingSlugs = await adminDb
+        .collection('publicSlugs')
+        .where('projectId', '==', projectId)
+        .get();
+
+      for (const slugDoc of matchingSlugs.docs) {
+        const slug = slugDoc.id;
+        const publicProjRef = adminDb.collection('publicProjects').doc(slug);
+        await adminDb.recursiveDelete(publicProjRef);
+        await slugDoc.ref.delete();
+      }
+    } catch (pubErr) {
+      console.warn(`Public snapshot cleanup for project ${projectId} skipped or failed:`, pubErr);
+    }
+
+    // 3. Cascade recursive deletion of the private project document and all subcollections
+    const projectRef = adminDb.collection('projects').doc(projectId);
+    await adminDb.recursiveDelete(projectRef);
+
+    return NextResponse.json({ success: true, message: 'Manuscript deleted successfully' });
+  } catch (err) {
+    if (err instanceof AuthError) {
+      return authErrorResponse(err);
+    }
+    console.error('Unexpected error deleting project', err);
+    return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
+  }
+}

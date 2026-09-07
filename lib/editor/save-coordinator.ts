@@ -49,12 +49,12 @@ export interface CoordinatorOptions {
   onVersionChange?: (version: number) => void;
 
   localDebounceMs?: number;
+  /** @deprecated Remote saving is strictly manual. Kept for test option compatibility. */
   remoteDebounceMs?: number;
   isOnline?: () => boolean;
 }
 
 const DEFAULT_LOCAL_DEBOUNCE = 300;
-const DEFAULT_REMOTE_DEBOUNCE = 1500;
 
 /** Statuses where closing the tab could lose work the server has not accepted. */
 const UNSAFE_TO_LEAVE: ReadonlySet<AutosaveStatus> = new Set<AutosaveStatus>([
@@ -73,7 +73,6 @@ export class SaveCoordinator {
   private conflict: ConflictState | null = null;
 
   private localTimer: ReturnType<typeof setTimeout> | null = null;
-  private remoteTimer: ReturnType<typeof setTimeout> | null = null;
   private inFlight: Promise<void> | null = null;
   /**
    * Serialised tail of fire-and-forget mirror work. Kept awaitable so nothing
@@ -131,7 +130,7 @@ export class SaveCoordinator {
 
   // ---------- editor input ----------
 
-  /** Called on every editor change. Schedules both cadences. */
+  /** Called on every editor change. Updates local recovery mirror only; NO remote save. */
   handleChange(snapshot: ManuscriptSnapshot): void {
     if (this.disposed) return;
 
@@ -144,7 +143,6 @@ export class SaveCoordinator {
     }
 
     this.scheduleLocal();
-    if (this.status !== 'conflict') this.scheduleRemote();
   }
 
   private scheduleLocal(): void {
@@ -153,14 +151,6 @@ export class SaveCoordinator {
       this.localTimer = null;
       void this.writeMirror();
     }, this.opts.localDebounceMs ?? DEFAULT_LOCAL_DEBOUNCE);
-  }
-
-  private scheduleRemote(): void {
-    if (this.remoteTimer) clearTimeout(this.remoteTimer);
-    this.remoteTimer = setTimeout(() => {
-      this.remoteTimer = null;
-      void this.pushToRemote();
-    }, this.opts.remoteDebounceMs ?? DEFAULT_REMOTE_DEBOUNCE);
   }
 
   // ---------- local durability ----------
@@ -247,7 +237,6 @@ export class SaveCoordinator {
         } else {
           await putMirror(this.buildMirror(this.pending!, true));
           this.setStatus('dirty');
-          this.scheduleRemote();
         }
       } catch (err) {
         if (this.disposed) return;
@@ -266,17 +255,26 @@ export class SaveCoordinator {
   }
 
   /**
-   * Flushes everything pending: cancels timers, writes the mirror, then
-   * attempts the remote save. Used by Ctrl+S, by navigation and by unmount.
+   * Flushes only the local IndexedDB mirror.
+   * Does NOT perform a remote save. Used by pagehide, visibilitychange and unmount.
    */
-  async flush(): Promise<void> {
+  async flushLocal(): Promise<void> {
     if (this.localTimer) {
       clearTimeout(this.localTimer);
       this.localTimer = null;
     }
-    if (this.remoteTimer) {
-      clearTimeout(this.remoteTimer);
-      this.remoteTimer = null;
+    await this.writeMirror();
+    await this.backgroundWork;
+  }
+
+  /**
+   * User-initiated remote save (Ctrl+S or explicit Save button).
+   * Writes the local mirror, then performs the versioned remote Firestore save.
+   */
+  async saveNow(): Promise<void> {
+    if (this.localTimer) {
+      clearTimeout(this.localTimer);
+      this.localTimer = null;
     }
 
     await this.writeMirror();
@@ -287,9 +285,12 @@ export class SaveCoordinator {
     await this.whenSettled();
   }
 
-  /** Ctrl+S — identical to flush, exposed under an intention-revealing name. */
-  async saveNow(): Promise<void> {
-    await this.flush();
+  /**
+   * Compatibility alias for saveNow(). Used by checkpoints and tests that
+   * verify transactional save commit.
+   */
+  async flush(): Promise<void> {
+    await this.saveNow();
   }
 
   // ---------- conflict resolution (Stage 2B) ----------
@@ -343,7 +344,6 @@ export class SaveCoordinator {
     this.pending = snapshot;
     this.baseVersion = baseVersion;
     this.setStatus('dirty');
-    this.scheduleRemote();
   }
 
   getLastSynced(): ManuscriptSnapshot | null {
@@ -359,10 +359,6 @@ export class SaveCoordinator {
     if (this.localTimer) {
       clearTimeout(this.localTimer);
       this.localTimer = null;
-    }
-    if (this.remoteTimer) {
-      clearTimeout(this.remoteTimer);
-      this.remoteTimer = null;
     }
   }
 

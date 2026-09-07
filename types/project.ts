@@ -60,6 +60,8 @@ export interface Volume {
   updatedAt: number;
 }
 
+export type ChapterType = 'prologue' | 'chapter' | 'epilogue';
+
 export interface Chapter {
   id: string;
   projectId: string;
@@ -74,6 +76,12 @@ export interface Chapter {
   publishedRevisionId?: string;
 
   /**
+   * Explicit section type. Backward compatibility: when absent, treated as
+   * 'chapter'. Prologue and Epilogue have chapterNumber = null.
+   */
+  chapterType?: ChapterType;
+
+  /**
    * Denormalized word count of the chapter's ACTIVE variant only, maintained
    * for sidebar and dashboard list views so they need not read every variant.
    *
@@ -84,6 +92,13 @@ export interface Chapter {
   totalWordCount: number;
   createdAt: number;
   updatedAt: number;
+}
+
+/** Backward compatibility helper: treats missing chapterType as 'chapter'. */
+export function resolveChapterType(
+  chapter: Pick<Chapter, 'chapterType'> | null | undefined
+): ChapterType {
+  return chapter?.chapterType ?? 'chapter';
 }
 
 export interface DraftVariant {
