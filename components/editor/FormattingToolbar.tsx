@@ -25,13 +25,20 @@ import {
   GitMerge,
   SlidersHorizontal,
   Save,
+  BookOpen,
+  ScrollText,
 } from 'lucide-react';
 import type { AutosaveStatus } from '@/types/editor';
 import type { DocumentSettings } from '@/types/project';
-import { MANUSCRIPT_FONTS } from '@/lib/editor/fonts';
+import { fontOptions, fontSelectValue } from '@/lib/editor/fonts';
 import { FONT_SIZE_OPTIONS } from '@/lib/editor/extensions/FontSizeExtension';
 import { INDENT_STEP_CM } from '@/lib/editor/extensions/ParagraphFormatExtension';
 import type { Alignment } from '@/lib/format/effective';
+import {
+  DISPLAY_SPACING_LABELS,
+  type DisplaySpacingMode,
+  type EditorViewMode,
+} from '@/lib/editor/display-preferences';
 
 interface FormattingToolbarProps {
   editor: Editor | null;
@@ -39,8 +46,15 @@ interface FormattingToolbarProps {
   wordCount: number;
   settings: DocumentSettings;
   onOpenParagraphSettings: () => void;
+  onOpenSceneBreak: () => void;
   onOpenFindReplace?: () => void;
   onSave?: () => void;
+
+  /** Presentation only — see lib/editor/display-preferences.ts. */
+  viewMode: EditorViewMode;
+  onViewModeChange: (mode: EditorViewMode) => void;
+  displaySpacing: DisplaySpacingMode;
+  onDisplaySpacingChange: (mode: DisplaySpacingMode) => void;
 }
 
 const btn =
@@ -64,8 +78,13 @@ export const FormattingToolbar: React.FC<FormattingToolbarProps> = ({
   wordCount,
   settings,
   onOpenParagraphSettings,
+  onOpenSceneBreak,
   onOpenFindReplace,
   onSave,
+  viewMode,
+  onViewModeChange,
+  displaySpacing,
+  onDisplaySpacingChange,
 }) => {
   if (!editor) return null;
 
@@ -74,13 +93,22 @@ export const FormattingToolbar: React.FC<FormattingToolbarProps> = ({
 
   // Selectors show the EFFECTIVE value: the override when set, else the
   // project default — so the toolbar never implies an override that isn't there.
-  const currentFont: string = textStyle.fontFamily || settings.bodyFont;
+  //
+  // Resolved through fontSelectValue so the select's value always matches one
+  // of its options. A legacy run or project carrying a CSS stack would
+  // otherwise leave the select unmatched, and the browser would display the
+  // first option — naming a font the manuscript is not written in.
+  const currentFont: string = fontSelectValue(textStyle.fontFamily || settings.bodyFont);
+  const projectFont: string = fontSelectValue(settings.bodyFont);
   const currentSize: number = textStyle.fontSizePt || settings.bodyFontSizePt;
   const currentAlign: Alignment =
     paragraphAttrs.textAlignOverride || settings.paragraphAlignment;
 
   return (
-    <div className="h-12 border-b border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 px-3 flex items-center justify-between gap-2 overflow-x-auto shrink-0 z-10">
+    /* Sticky rather than merely first-in-column: the manuscript scrolls
+       beneath it, and it stays reachable however the surrounding height chain
+       resolves. It is the only formatting toolbar — nothing floats. */
+    <div className="sticky top-0 z-20 shrink-0 min-h-12 border-b border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 px-3 flex items-center justify-between gap-2 overflow-x-auto">
       <div className="flex items-center gap-1">
         {/* Undo / Redo */}
         <button
@@ -107,9 +135,11 @@ export const FormattingToolbar: React.FC<FormattingToolbarProps> = ({
           value={currentFont}
           onChange={(e) => {
             const value = e.target.value;
-            if (value === settings.bodyFont) {
+            if (value === projectFont) {
               // Back to the project default: clear the override rather than
-              // writing the default onto the run.
+              // writing the default onto the run. Compared canonically, so a
+              // project stored with a legacy CSS stack still recognises its own
+              // default and clears instead of pinning it.
               editor.chain().focus().unsetFontFamily().run();
             } else {
               editor.chain().focus().setFontFamily(value).run();
@@ -119,8 +149,13 @@ export const FormattingToolbar: React.FC<FormattingToolbarProps> = ({
           aria-label="Font family"
           className={`${selectCls} w-[130px]`}
         >
-          {MANUSCRIPT_FONTS.map((f) => (
-            <option key={f.docxName} value={f.docxName}>
+          {/*
+            Three fonts, plus the current one when a manuscript predates the
+            narrowing — so an older font is shown as it is rather than silently
+            reported as one of the three.
+          */}
+          {fontOptions(currentFont).map((f) => (
+            <option key={f.value} value={f.value}>
               {f.label}
             </option>
           ))}
@@ -232,8 +267,8 @@ export const FormattingToolbar: React.FC<FormattingToolbarProps> = ({
 
         {/* Semantic breaks */}
         <button
-          onClick={() => editor.chain().focus().insertSceneBreak().run()}
-          title={`Insert Scene Break (${settings.sceneBreakSymbol || '***'})`}
+          onClick={onOpenSceneBreak}
+          title={`Insert Scene Break (${settings.sceneBreakSymbol || '***'}) — with an optional scene header`}
           className="px-2 py-1 text-xs font-semibold text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 rounded border border-slate-200 dark:border-slate-700 flex items-center gap-1 transition-colors shrink-0"
         >
           <Sparkles className="w-3.5 h-3.5 text-amber-500" /> Scene
@@ -251,6 +286,49 @@ export const FormattingToolbar: React.FC<FormattingToolbarProps> = ({
             <Search className="w-4 h-4" />
           </button>
         )}
+
+        <div className={divider} />
+
+        {/*
+          View controls are PRESENTATION ONLY. Neither of these writes anything
+          to the manuscript: they change how this screen renders the same text.
+          (lib/editor/display-preferences.ts)
+        */}
+        <button
+          onClick={() => onViewModeChange(viewMode === 'page' ? 'scroll' : 'page')}
+          title={
+            viewMode === 'page'
+              ? 'Page View — switch to continuous Writing View'
+              : 'Writing View — switch to A5 Page View'
+          }
+          aria-pressed={viewMode === 'page'}
+          className={viewMode === 'page' ? btnActive : btn}
+        >
+          {viewMode === 'page' ? (
+            <BookOpen className="w-4 h-4" />
+          ) : (
+            <ScrollText className="w-4 h-4" />
+          )}
+        </button>
+
+        <select
+          value={viewMode === 'page' ? 'manuscript' : displaySpacing}
+          onChange={(e) => onDisplaySpacingChange(e.target.value as DisplaySpacingMode)}
+          disabled={viewMode === 'page'}
+          title={
+            viewMode === 'page'
+              ? 'Page View always uses the manuscript line spacing, so page boundaries stay accurate'
+              : 'Editor display spacing — on-screen readability only, never saved to the manuscript'
+          }
+          aria-label="Editor display spacing"
+          className={`${selectCls} w-[132px] disabled:opacity-50`}
+        >
+          {(Object.keys(DISPLAY_SPACING_LABELS) as DisplaySpacingMode[]).map((mode) => (
+            <option key={mode} value={mode}>
+              {DISPLAY_SPACING_LABELS[mode]}
+            </option>
+          ))}
+        </select>
       </div>
 
       {/* Status & Save Button */}

@@ -16,6 +16,12 @@
  * inline formatting that the old plain-text pipeline discarded.
  */
 
+import {
+  SCENE_HEADER_SEPARATOR,
+  normalizeSceneHeaderField,
+  sceneHeaderToText,
+} from '@/lib/editor/scene-header';
+
 export interface TiptapNode {
   type?: string;
   text?: string;
@@ -119,6 +125,25 @@ function renderNode(node: TiptapNode | null | undefined, depth: number): string 
     case 'sceneBreak':
       return '<div class="novel-scene-break" aria-hidden="true"></div>';
 
+    case 'sceneHeader': {
+      // Attribute values are author text, so they are escaped exactly like
+      // prose. The markup itself is fixed; nothing here interpolates a tag,
+      // an attribute name or a URL.
+      const time = normalizeSceneHeaderField(node.attrs?.timeText);
+      const location = normalizeSceneHeaderField(node.attrs?.locationText);
+      if (!time && !location) return '';
+
+      const parts: string[] = [];
+      if (time) parts.push(`<span class="scene-header-time">${escapeHtml(time)}</span>`);
+      if (time && location) {
+        parts.push(`<span class="scene-header-sep">${escapeHtml(SCENE_HEADER_SEPARATOR)}</span>`);
+      }
+      if (location) {
+        parts.push(`<span class="scene-header-location">${escapeHtml(location)}</span>`);
+      }
+      return `<div class="novel-scene-header">${parts.join('')}</div>`;
+    }
+
     case 'pageBreak':
       return '<div class="novel-page-break" aria-hidden="true"></div>';
 
@@ -161,6 +186,13 @@ export function renderTiptapToPlainText(doc: TiptapDoc | null | undefined): stri
     if (node.type === 'hardBreak') return '\n';
     if (node.type === 'sceneBreak') {
       lines.push('***');
+      return '';
+    }
+    if (node.type === 'sceneHeader') {
+      // Scene headers are author-written prose, so they belong in the text
+      // used for search and previews.
+      const text = sceneHeaderToText(node.attrs as { timeText?: string; locationText?: string });
+      if (text) lines.push(text);
       return '';
     }
     if (node.type === 'pageBreak') return '';

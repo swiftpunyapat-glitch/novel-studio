@@ -21,6 +21,7 @@ export const SUPPORTED_NODE_TYPES = [
   'text',
   'hardBreak',
   'sceneBreak',
+  'sceneHeader',
   'pageBreak',
 ] as const;
 

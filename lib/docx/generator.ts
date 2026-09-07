@@ -22,6 +22,8 @@ import {
   type Alignment,
 } from '@/lib/format/effective';
 import { isSupportedNode, UnsupportedNodeError } from '@/lib/editor/manuscript-schema';
+import { sceneHeaderToText } from '@/lib/editor/scene-header';
+import { canonicalFontName } from '@/lib/editor/fonts';
 
 /**
  * Tiptap -> OOXML mapper. (Audit H1 / H2, Stage 3H + 3I)
@@ -70,10 +72,13 @@ const STYLE_IDS = {
   chapterSubtitle: 'NovelChapterSubtitle',
   chapterContext: 'NovelChapterContext',
   sceneBreak: 'NovelSceneBreak',
+  sceneHeader: 'NovelSceneHeader',
 } as const;
 
 function buildStyles(settings: DocumentSettings) {
-  const font = settings.bodyFont;
+  // A canonical family name, never a CSS stack: Word resolves w:ascii and w:cs
+  // as one font name, so "TH Sarabun New, sans-serif" would silently substitute.
+  const font = canonicalFontName(settings.bodyFont) ?? settings.bodyFont;
   const bodyHalfPt = ptToHalfPoints(settings.bodyFontSizePt);
 
   const centered = {
@@ -143,6 +148,17 @@ function buildStyles(settings: DocumentSettings) {
         quickFormat: true,
         run: { font, size: bodyHalfPt, bold: true },
         paragraph: { ...centered, spacing: { before: ptToTwip(12), after: ptToTwip(12) } },
+      },
+      {
+        // A scene header sits directly under its scene break, so it carries no
+        // space before — the break's 12pt after already separates them.
+        id: STYLE_IDS.sceneHeader,
+        name: 'Novel Scene Header',
+        basedOn: 'Normal',
+        next: 'Normal',
+        quickFormat: true,
+        run: { font, size: bodyHalfPt, italics: true },
+        paragraph: { ...centered, spacing: { before: 0, after: ptToTwip(12) } },
       },
     ],
   };
@@ -255,13 +271,33 @@ function buildBlock(
           children: [
             new TextRun({
               text: settings.sceneBreakSymbol || '***',
-              font: settings.bodyFont,
+              font: resolveRunFormat(null, settings).fontFamily,
               size: ptToHalfPoints(settings.bodyFontSizePt),
               bold: true,
             }),
           ],
         }),
       ];
+
+    case 'sceneHeader': {
+      const text = sceneHeaderToText(node.attrs as { timeText?: string; locationText?: string });
+      // An empty header carries no information; emitting a blank centered
+      // paragraph would add stray vertical space to the printed page.
+      if (!text) return [];
+      return [
+        new Paragraph({
+          style: STYLE_IDS.sceneHeader,
+          children: [
+            new TextRun({
+              text,
+              font: resolveRunFormat(null, settings).fontFamily,
+              size: ptToHalfPoints(settings.bodyFontSizePt),
+              italics: true,
+            }),
+          ],
+        }),
+      ];
+    }
 
     case 'pageBreak':
       // A real OOXML page break, not a visual separator.

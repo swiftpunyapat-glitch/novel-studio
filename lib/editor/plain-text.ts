@@ -1,7 +1,10 @@
+import { sceneHeaderToText } from '@/lib/editor/scene-header';
+
 interface TiptapNode {
   type?: string;
   text?: string;
   content?: TiptapNode[];
+  attrs?: Record<string, unknown>;
   [key: string]: unknown;
 }
 
@@ -17,6 +20,13 @@ export function extractPlainTextFromTiptap(doc: { content?: TiptapNode[] } | nul
 
     if (node.type === 'sceneBreak') {
       return '\n***\n';
+    }
+
+    if (node.type === 'sceneHeader') {
+      // Word count follows what the author actually wrote, so an empty header
+      // contributes nothing.
+      const text = sceneHeaderToText(node.attrs as { timeText?: string; locationText?: string });
+      return text ? `\n${text}\n` : '';
     }
 
     if (node.type === 'pageBreak') {

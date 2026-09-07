@@ -4,7 +4,7 @@ import React, { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { useAuth } from '@/lib/firebase/auth';
 import { getProjects, createProject } from '@/lib/firebase/firestore';
-import { Project } from '@/types/project';
+import { Project, DEFAULT_DOCUMENT_SETTINGS } from '@/types/project';
 import { BookPlus, Book, Loader2, PenLine, MoreVertical, Trash2, AlertTriangle } from 'lucide-react';
 import { Button } from '@/components/ui/Button';
 import { Input } from '@/components/ui/Input';
@@ -327,7 +327,7 @@ export default function StudioDashboard() {
               <div className="p-3 bg-slate-50 dark:bg-slate-800/50 rounded-lg text-xs text-slate-500 space-y-1">
                 <p className="font-semibold text-slate-700 dark:text-slate-300">Default Manuscript Settings:</p>
                 <p>• Size: A5 (148 × 210 mm) with 20mm margins</p>
-                <p>• Body: Sarabun 16pt, Left-aligned</p>
+                <p>• Body: {DEFAULT_DOCUMENT_SETTINGS.bodyFont} {DEFAULT_DOCUMENT_SETTINGS.bodyFontSizePt}pt, Left-aligned</p>
                 <p>• Indentation: First-line 0.5 cm</p>
                 <p>• Line Spacing: Multiple 1.08</p>
               </div>

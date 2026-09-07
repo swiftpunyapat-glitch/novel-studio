@@ -1,3 +1,5 @@
+import { DEFAULT_BODY_FONT } from '@/lib/editor/fonts';
+
 export interface DocumentSettings {
   paperSize: 'A5';
   margins: {
@@ -25,7 +27,7 @@ export const DEFAULT_DOCUMENT_SETTINGS: DocumentSettings = {
     leftMm: 20,
     rightMm: 20,
   },
-  bodyFont: 'Sarabun',
+  bodyFont: DEFAULT_BODY_FONT,
   bodyFontSizePt: 16,
   paragraphAlignment: 'left',
   firstLineIndentCm: 0.5,
