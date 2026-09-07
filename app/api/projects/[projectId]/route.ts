@@ -27,12 +27,17 @@ export async function DELETE(
     // 1. Delete associated Storage files (character dossiers, reference images)
     try {
       const bucket = adminStorage.bucket();
+      if (!bucket || !bucket.name) {
+        throw new Error('No storage bucket configured on Firebase Admin');
+      }
       await bucket.deleteFiles({ prefix: `projects/${projectId}/` });
     } catch (storageErr: unknown) {
       console.error(`Storage cleanup for project ${projectId} failed:`, storageErr);
-      const msg = storageErr instanceof Error ? storageErr.message : String(storageErr);
       return NextResponse.json(
-        { error: `Failed to clean up storage files: ${msg}` },
+        {
+          error: 'Could not delete manuscript storage.',
+          code: 'STORAGE_CLEANUP_FAILED',
+        },
         { status: 500 }
       );
     }
@@ -52,9 +57,11 @@ export async function DELETE(
       }
     } catch (pubErr: unknown) {
       console.error(`Public snapshot cleanup for project ${projectId} failed:`, pubErr);
-      const msg = pubErr instanceof Error ? pubErr.message : String(pubErr);
       return NextResponse.json(
-        { error: `Failed to clean up public snapshots: ${msg}` },
+        {
+          error: 'Could not remove published manuscript data.',
+          code: 'PUBLIC_CLEANUP_FAILED',
+        },
         { status: 500 }
       );
     }
