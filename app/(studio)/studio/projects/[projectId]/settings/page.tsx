@@ -7,7 +7,7 @@ import { Project, DocumentSettings } from '@/types/project';
 import { Input } from '@/components/ui/Input';
 import { Button } from '@/components/ui/Button';
 import { Settings, Save, CheckCircle2 } from 'lucide-react';
-import { fontOptions } from '@/lib/editor/fonts';
+import { fontOptions, fontSelectValue } from '@/lib/editor/fonts';
 
 export default function ProjectSettingsPage() {
   const params = useParams();
@@ -114,10 +114,15 @@ export default function ProjectSettingsPage() {
                 Word font name — never a CSS stack — because it is what DOCX
                 export writes. A project that predates this list keeps its font
                 and sees it here as "(current)". (lib/editor/fonts.ts)
+
+                The displayed value is canonicalised so it always matches an
+                option; the stored setting is left exactly as it is until the
+                author picks a different font, so merely opening this page
+                never rewrites a legacy value.
               */}
               <select
                 id="body-font"
-                value={settings.bodyFont}
+                value={fontSelectValue(settings.bodyFont)}
                 onChange={(e) => setSettings({ ...settings, bodyFont: e.target.value })}
                 className="w-full px-3 py-2 bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 rounded-md text-sm text-slate-900 dark:text-slate-100"
               >

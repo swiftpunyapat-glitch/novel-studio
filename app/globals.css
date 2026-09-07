@@ -1,8 +1,11 @@
-@tailwind base;
-@tailwind components;
-@tailwind utilities;
-
 /*
+   FIRST, before any other rule.
+
+   CSS requires @import to precede everything except @charset and @layer. Below
+   the @tailwind directives it is invalid and a browser is entitled to drop it,
+   which would silently leave Prompt and Sarabun unloaded — so the manuscript
+   would render in a substitute face without anything appearing to be wrong.
+
    Sarabun is the UI face and the display stand-in for TH Sarabun New, which is
    a desktop font and rarely installed outside Thailand. Prompt is a manuscript
    font in its own right. Angsana New ships with Windows and Office, so there is
@@ -10,6 +13,10 @@
    DOCX export writes — see lib/editor/fonts.ts.
 */
 @import url('https://fonts.googleapis.com/css2?family=Sarabun:ital,wght@0,300;0,400;0,500;0,600;0,700;1,400;1,600&family=Prompt:ital,wght@0,300;0,400;0,500;0,600;0,700;1,400;1,600&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
 
 :root {
   --background: #f8fafc;

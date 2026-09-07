@@ -7,8 +7,10 @@ import {
 } from '@/lib/server/auth';
 import {
   CleanupError,
+  ConfirmationError,
   deleteVolumeCascade,
   readPathId,
+  requireTitleConfirmation,
   requireVolume,
 } from '@/lib/server/cascade-delete';
 
@@ -19,6 +21,10 @@ import {
  * says so. The server's job is to make it exact: only chapters whose
  * `volumeId` is this volume are removed, and no other part of the project —
  * other volumes, characters, project settings, the published book — is touched.
+ *
+ * The body must carry `{ confirmationTitle }` matching the volume's stored
+ * title, checked here rather than trusted from the dialog, and checked before
+ * a single chapter is deleted.
  */
 
 export const dynamic = 'force-dynamic';
@@ -39,6 +45,10 @@ export async function DELETE(
     await requireProjectOwner(uid, projectId);
     const volume = await requireVolume(projectId, volumeId);
 
+    // Nothing is touched until the caller proves they meant this volume — which
+    // matters more here, where a mistake takes every chapter inside it.
+    await requireTitleConfirmation(req, volume.title);
+
     const { deletedChapterIds } = await deleteVolumeCascade(projectId, volumeId);
 
     return NextResponse.json({
@@ -50,6 +60,10 @@ export async function DELETE(
   } catch (err) {
     if (err instanceof AuthError) {
       return authErrorResponse(err);
+    }
+    if (err instanceof ConfirmationError) {
+      // Refused before the cascade started; every chapter is untouched.
+      return NextResponse.json({ error: err.publicMessage }, { status: err.status });
     }
     if (err instanceof CleanupError) {
       // Partial progress is possible here — some chapters may already be gone.

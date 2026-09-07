@@ -40,6 +40,15 @@ export interface PaginationBlock {
   heightPx: number;
   /** True for an author-inserted `pageBreak` node. */
   isExplicitBreak: boolean;
+  /**
+   * True when this block must not be separated from the one after it.
+   *
+   * A scene break and its scene header are one gesture; splitting them leaves
+   * `***` stranded at the bottom of a page and "18:30 — Bangkok" alone at the
+   * top of the next, which reads as a different scene entirely. See
+   * `keepsWithNext`.
+   */
+  keepWithNext?: boolean;
 }
 
 export interface PageSpacer {
@@ -66,6 +75,20 @@ export interface PaginationOptions {
   pageGapPx: number;
 }
 
+/**
+ * Whether a block must stay on the same page as the one following it.
+ *
+ * Presentation only. No grouping node is created, nothing in the manuscript
+ * changes, and a scene break with no header after it is unaffected — the two
+ * remain independent nodes that this rule merely declines to separate.
+ */
+export function keepsWithNext(
+  type: string | undefined,
+  nextType: string | undefined
+): boolean {
+  return type === 'sceneBreak' && nextType === 'sceneHeader';
+}
+
 /** Sub-pixel fillers are visually nothing and would only churn the DOM. */
 const MIN_FILLER_PX = 0.5;
 
@@ -82,6 +105,9 @@ export const PAGE_VIEW_GAP_PX = 28;
  * no page it would fit on — so it is left to straddle the boundary. That is the
  * accepted V1 approximation: the alternative is splitting the author's
  * paragraph, which would mean editing the manuscript to satisfy the display.
+ *
+ * Blocks marked `keepWithNext` are measured as a group, so a scene break moves
+ * to the next page together with the scene header that belongs to it.
  */
 export function computePageSpacers(
   blocks: readonly PaginationBlock[],
@@ -98,6 +124,26 @@ export function computePageSpacers(
   // Total spacer height inserted above the block being considered. Measured
   // tops exclude it, so it is added back to get the on-screen position.
   let shift = 0;
+
+  /**
+   * Vertical span of a block plus every block it must stay with.
+   *
+   * Measured from the first member's top to the last member's bottom rather
+   * than by summing heights, because the space BETWEEN two members is real:
+   * a scene break and its header are separated by their collapsed margins, and
+   * summing `heightPx` — which excludes margins — would understate the pair by
+   * exactly that gap and let it straddle the boundary it was grouped to avoid.
+   *
+   * For a block with nothing to keep, this is its own height, so the ungrouped
+   * path is unchanged. Walking the run rather than looking one ahead means a
+   * chain is handled the same way as a pair.
+   */
+  const groupHeightAt = (index: number): number => {
+    let cursor = index;
+    while (blocks[cursor]?.keepWithNext && blocks[cursor + 1]) cursor += 1;
+    const last = blocks[cursor];
+    return last.topPx + last.heightPx - blocks[index].topPx;
+  };
 
   blocks.forEach((block, blockIndex) => {
     const start = block.topPx + shift;
@@ -127,28 +173,48 @@ export function computePageSpacers(
       return;
     }
 
+    // The group, not the block: a scene break that fits while its header does
+    // not must still move, or the pair is split across the boundary.
+    const groupHeight = groupHeightAt(blockIndex);
+
     const startedInGap = start >= pageBottom;
-    const straddles =
-      start + block.heightPx > pageBottom && block.heightPx <= pageHeightPx;
+    const straddles = start + groupHeight > pageBottom && groupHeight <= pageHeightPx;
 
     if (startedInGap || straddles) {
       push('automatic');
     }
+    // A group taller than a whole page has nowhere to go, so its members fall
+    // back to being placed individually by the rules above.
   });
 
   return spacers;
 }
 
-/** Stable identity for a spacer list, so an unchanged layout is not re-applied. */
-export function spacerSignature(spacers: readonly PageSpacer[]): string {
-  return spacers
+/**
+ * Stable identity for a computed layout, so an unchanged one is not re-applied.
+ * The trailing fill is part of it: the last sheet can grow while no boundary
+ * moves, and that still needs rendering.
+ */
+export function spacerSignature(
+  spacers: readonly PageSpacer[],
+  tailFillPx = 0
+): string {
+  const boundaries = spacers
     .map((s) => `${s.pos}:${s.kind}:${Math.round(s.fillerPx)}`)
     .join('|');
+  return `${boundaries}#${Math.round(tailFillPx)}`;
 }
 
 /**
- * Total height of the paged strip, so the sheet background can be drawn to the
- * end of the last page rather than stopping at the last line of prose.
+ * Where the last page's text area ends, given how far the content reaches.
+ *
+ * Equivalently the height of the whole paged strip: `pages * period - gap`
+ * collapses to `(pages - 1) * period + pageHeight`, which is the bottom of the
+ * final page's content area. Both readings are the same number.
+ *
+ * The page count comes from `floor + 1` rather than `ceil` so that content
+ * ending exactly on a page boundary — or inside the gap below it, which an
+ * oversized block can do — still counts the page it has spilled onto.
  */
 export function paginatedHeightPx(
   contentHeightPx: number,
@@ -158,6 +224,36 @@ export function paginatedHeightPx(
   if (!Number.isFinite(pageHeightPx) || pageHeightPx <= 0) return contentHeightPx;
 
   const period = pageHeightPx + pageGapPx;
-  const pages = Math.max(1, Math.ceil(contentHeightPx / period));
+  const pages = Math.floor(Math.max(0, contentHeightPx) / period) + 1;
   return pages * period - pageGapPx;
+}
+
+/**
+ * Blank height that completes the sheet the manuscript ends on. (Stage 4G)
+ *
+ * Without it the last page stops at the final line of prose and the painted
+ * sheet is cut off mid-page, so a document always looks as though it ends in
+ * the middle of a piece of paper.
+ *
+ * Presentation only, like everything else here: it is rendered as one more
+ * spacer decoration at the end of the document. Nothing is written, and an
+ * empty document still yields exactly one full sheet.
+ */
+export function trailingFillPx(
+  blocks: readonly PaginationBlock[],
+  spacers: readonly PageSpacer[],
+  options: PaginationOptions
+): number {
+  const { pageHeightPx } = options;
+  if (!Number.isFinite(pageHeightPx) || pageHeightPx <= 0) return 0;
+
+  const shift = spacers.reduce((total, spacer) => total + spacer.fillerPx, 0);
+  const last = blocks[blocks.length - 1];
+
+  // A document ending in an explicit page break reaches the top of the page
+  // after it — its filler is already counted in `shift` — so that empty final
+  // page is drawn in full, exactly as Word would print it.
+  const contentEnd = last ? last.topPx + last.heightPx + shift : 0;
+
+  return Math.max(0, paginatedHeightPx(contentEnd, options) - contentEnd);
 }

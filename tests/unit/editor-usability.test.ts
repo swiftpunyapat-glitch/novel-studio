@@ -6,6 +6,7 @@ import {
   canonicalFontName,
   fontCssStack,
   fontOptions,
+  fontSelectValue,
   isKnownFont,
 } from '@/lib/editor/fonts';
 import {
@@ -22,8 +23,10 @@ import {
 } from '@/lib/editor/scene-header';
 import {
   computePageSpacers,
+  keepsWithNext,
   paginatedHeightPx,
   spacerSignature,
+  trailingFillPx,
   type PaginationBlock,
 } from '@/lib/editor/pagination';
 import {
@@ -138,6 +141,51 @@ describe('Manuscript font catalogue', () => {
     test('a legacy CSS stack is offered under its canonical name', () => {
       const options = fontOptions("'Sarabun', sans-serif");
       expect(options[3].value).toBe('Sarabun');
+    });
+  });
+
+  describe('fontSelectValue', () => {
+    test('passes an offered font through unchanged', () => {
+      expect(fontSelectValue('Prompt')).toBe('Prompt');
+      expect(fontSelectValue('TH Sarabun New')).toBe('TH Sarabun New');
+    });
+
+    test('canonicalises a legacy CSS stack so the select can match an option', () => {
+      // The bug this closes: the option said "Sarabun" while the select held
+      // "'Sarabun', sans-serif", so nothing matched and the browser displayed
+      // the first option — naming a font the manuscript is not written in.
+      expect(fontSelectValue("'Sarabun', sans-serif")).toBe('Sarabun');
+      expect(fontSelectValue('"TH Sarabun New", sans-serif')).toBe('TH Sarabun New');
+    });
+
+    test('falls back to the default when there is no usable name', () => {
+      expect(fontSelectValue(null)).toBe(DEFAULT_BODY_FONT);
+      expect(fontSelectValue('')).toBe(DEFAULT_BODY_FONT);
+      expect(fontSelectValue('serif')).toBe(DEFAULT_BODY_FONT);
+    });
+
+    test.each([
+      'Prompt',
+      'TH Sarabun New',
+      'Angsana New',
+      'Georgia',
+      "'Sarabun', sans-serif",
+      '"Times New Roman", Times, serif',
+      'sans-serif',
+      '',
+      null,
+    ])('the value for %p is always one of its own options', (stored) => {
+      // The invariant the two helpers have to keep together: a controlled
+      // select can never hold a value with no matching option.
+      const values = fontOptions(stored as string | null).map((o) => o.value);
+      expect(values).toContain(fontSelectValue(stored as string | null));
+    });
+
+    test('resolving for display does not alter the stored value', () => {
+      const stored = "'Sarabun', sans-serif";
+      fontSelectValue(stored);
+      fontOptions(stored);
+      expect(stored).toBe("'Sarabun', sans-serif");
     });
   });
 
@@ -380,7 +428,8 @@ describe('Page View pagination', () => {
   /** Lays blocks out back to back at their natural offsets. */
   function flow(
     heights: number[],
-    explicitAt: number[] = []
+    explicitAt: number[] = [],
+    keepWithNextAt: number[] = []
   ): PaginationBlock[] {
     let top = 0;
     return heights.map((heightPx, index) => {
@@ -390,6 +439,7 @@ describe('Page View pagination', () => {
         topPx: top,
         heightPx: explicitAt.includes(index) ? 0 : heightPx,
         isExplicitBreak: explicitAt.includes(index),
+        keepWithNext: keepWithNextAt.includes(index),
       };
       top += block.heightPx;
       return block;
@@ -495,6 +545,158 @@ describe('Page View pagination', () => {
     const a = computePageSpacers(flow([550, 100]), options);
     const b = computePageSpacers(flow([500, 200]), options);
     expect(spacerSignature(a)).not.toBe(spacerSignature(b));
+  });
+
+  test('the signature changes when only the final sheet grows', () => {
+    // The last page can lengthen while no boundary moves; that still has to
+    // reach the DOM, so the tail is part of the layout's identity.
+    const spacers = computePageSpacers(flow([100]), options);
+    expect(spacerSignature(spacers, 500)).not.toBe(spacerSignature(spacers, 300));
+  });
+
+  // -------------------------------------------------------------------------
+  // Scene break and scene header stay together (Stage 4G, review fix)
+  // -------------------------------------------------------------------------
+
+  describe('keeping a scene break with its scene header', () => {
+    test('only a scene break followed by a scene header is grouped', () => {
+      expect(keepsWithNext('sceneBreak', 'sceneHeader')).toBe(true);
+      expect(keepsWithNext('sceneBreak', 'paragraph')).toBe(false);
+      expect(keepsWithNext('sceneBreak', undefined)).toBe(false);
+      expect(keepsWithNext('paragraph', 'sceneHeader')).toBe(false);
+      expect(keepsWithNext('sceneHeader', 'paragraph')).toBe(false);
+    });
+
+    test('a pair that does not fit moves to the next page together', () => {
+      // 560 used; the break (20) still fits, its header (40) does not. Without
+      // grouping the reader gets *** alone at the foot of one page and
+      // "18:30 — Bangkok" alone at the top of the next.
+      const blocks = flow([560, 20, 40], [], [1]);
+      const spacers = computePageSpacers(blocks, options);
+
+      expect(spacers).toHaveLength(1);
+      // Moved before the BREAK, not before the header.
+      expect(spacers[0].blockIndex).toBe(1);
+      expect(spacers[0].fillerPx).toBe(140); // 600 - 560 + 100
+    });
+
+    test('without the grouping flag the pair would be split — the bug this fixes', () => {
+      const spacers = computePageSpacers(flow([560, 20, 40]), options);
+      expect(spacers).toHaveLength(1);
+      expect(spacers[0].blockIndex).toBe(2);
+    });
+
+    test('a pair that fits is left where it is', () => {
+      expect(computePageSpacers(flow([400, 20, 40], [], [1]), options)).toEqual([]);
+    });
+
+    test('the header is not moved a second time once its break has moved', () => {
+      const spacers = computePageSpacers(flow([560, 20, 40, 100], [], [1]), options);
+      expect(spacers.map((s) => s.blockIndex)).toEqual([1]);
+    });
+
+    test('a bare scene break is not grouped with whatever follows it', () => {
+      // Bare scene breaks stay valid and independent, exactly as before.
+      const types = ['paragraph', 'sceneBreak', 'paragraph'];
+      const keepAt = types
+        .map((type, index) => (keepsWithNext(type, types[index + 1]) ? index : -1))
+        .filter((index) => index >= 0);
+      expect(keepAt).toEqual([]);
+
+      const spacers = computePageSpacers(flow([560, 20, 40], [], keepAt), options);
+      // The break fits where it is; only the paragraph after it moves.
+      expect(spacers.map((s) => s.blockIndex)).toEqual([2]);
+    });
+
+    test('the margin between the pair counts toward whether it fits', () => {
+      // Heights exclude margins, and a scene header sits below its break with
+      // a real gap between them. Summing the two heights makes the pair look
+      // 24px shorter than it is, and it straddles the boundary it was grouped
+      // to avoid — which is exactly what happened in the browser.
+      const blocks: PaginationBlock[] = [
+        { pos: 0, nodeSize: 1, topPx: 0, heightPx: 560, isExplicitBreak: false },
+        { pos: 10, nodeSize: 1, topPx: 560, heightPx: 20, isExplicitBreak: false, keepWithNext: true },
+        { pos: 20, nodeSize: 1, topPx: 604, heightPx: 20, isExplicitBreak: false },
+      ];
+
+      // Sum of heights is 40, which would fit in the 40px left on the page.
+      // The real span, top of the break to bottom of the header, is 64.
+      const spacers = computePageSpacers(blocks, options);
+      expect(spacers).toHaveLength(1);
+      expect(spacers[0].blockIndex).toBe(1);
+    });
+
+    test('a group taller than a page falls back to individual placement', () => {
+      // Nowhere to move it to, so the ordinary rules take over rather than
+      // opening a blank page for something that cannot fit on one.
+      const spacers = computePageSpacers(flow([100, 400, 400], [], [1]), options);
+      expect(spacers.map((s) => s.blockIndex)).toEqual([2]);
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // The final sheet is completed (Stage 4G, review fix)
+  // -------------------------------------------------------------------------
+
+  describe('completing the final sheet', () => {
+    test('an empty document still shows exactly one full sheet', () => {
+      expect(trailingFillPx([], [], options)).toBe(PAGE);
+    });
+
+    test('a short document is padded to the bottom of page one', () => {
+      const blocks = flow([100]);
+      expect(trailingFillPx(blocks, computePageSpacers(blocks, options), options)).toBe(
+        PAGE - 100
+      );
+    });
+
+    test('content ending exactly at the page bottom needs no padding', () => {
+      const blocks = flow([PAGE]);
+      expect(trailingFillPx(blocks, computePageSpacers(blocks, options), options)).toBe(0);
+    });
+
+    test('a multi-page document completes its LAST page, not its first', () => {
+      const blocks = flow([550, 100]);
+      const spacers = computePageSpacers(blocks, options);
+      // Page 2 holds 100px of the 600 available.
+      expect(trailingFillPx(blocks, spacers, options)).toBe(PAGE - 100);
+    });
+
+    test('a document ending in an explicit page break draws a full blank page', () => {
+      // Which is what Word prints, too.
+      const blocks = flow([300, 0], [1]);
+      const spacers = computePageSpacers(blocks, options);
+      expect(trailingFillPx(blocks, spacers, options)).toBe(PAGE);
+    });
+
+    test('every page including the last occupies exactly one whole sheet', () => {
+      const blocks = flow([400, 400, 400, 400]);
+      const spacers = computePageSpacers(blocks, options);
+      const shift = spacers.reduce((total, s) => total + s.fillerPx, 0);
+      const last = blocks[blocks.length - 1];
+      const paginatedEnd =
+        last.topPx + last.heightPx + shift + trailingFillPx(blocks, spacers, options);
+
+      // Four pages of content: the strip ends on a page boundary, never
+      // part-way down a sheet.
+      expect((paginatedEnd + GAP) % (PAGE + GAP)).toBe(0);
+    });
+
+    test('degenerate geometry pads nothing rather than dividing by zero', () => {
+      const blocks = flow([100]);
+      expect(trailingFillPx(blocks, [], { pageHeightPx: 0, pageGapPx: 10 })).toBe(0);
+      expect(trailingFillPx(blocks, [], { pageHeightPx: -1, pageGapPx: 10 })).toBe(0);
+    });
+
+    test('padding is idempotent: measuring the padded layout gives the same tail', () => {
+      // The tail is a spacer like any other, so the measurer subtracts it back
+      // out and the second pass must agree with the first.
+      const blocks = flow([550, 100]);
+      const spacers = computePageSpacers(blocks, options);
+      const first = trailingFillPx(blocks, spacers, options);
+      const second = trailingFillPx(blocks, computePageSpacers(blocks, options), options);
+      expect(second).toBe(first);
+    });
   });
 });
 

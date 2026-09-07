@@ -15,6 +15,11 @@ import { Input } from '@/components/ui/Input';
  *
  * The volume variant states, before the field, that every chapter inside it
  * goes too — the thing an author would most regret not being told.
+ *
+ * What the author typed is handed to `onConfirm` and travels to the server,
+ * which checks it against the stored title before deleting anything. Confirming
+ * on the client alone would be decoration: the route is reachable without this
+ * dialog.
  */
 
 interface DeleteSectionDialogProps {
@@ -24,7 +29,8 @@ interface DeleteSectionDialogProps {
   chapterTitles?: string[];
   busy: boolean;
   error: string | null;
-  onConfirm: () => void;
+  /** Receives exactly what the author typed, for the server to verify. */
+  onConfirm: (confirmationTitle: string) => void;
   onClose: () => void;
 }
 
@@ -43,7 +49,7 @@ export const DeleteSectionDialog: React.FC<DeleteSectionDialogProps> = ({
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     if (!matches || busy) return;
-    onConfirm();
+    onConfirm(typed);
   };
 
   return (

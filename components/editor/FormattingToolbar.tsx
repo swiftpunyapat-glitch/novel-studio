@@ -30,7 +30,7 @@ import {
 } from 'lucide-react';
 import type { AutosaveStatus } from '@/types/editor';
 import type { DocumentSettings } from '@/types/project';
-import { fontOptions } from '@/lib/editor/fonts';
+import { fontOptions, fontSelectValue } from '@/lib/editor/fonts';
 import { FONT_SIZE_OPTIONS } from '@/lib/editor/extensions/FontSizeExtension';
 import { INDENT_STEP_CM } from '@/lib/editor/extensions/ParagraphFormatExtension';
 import type { Alignment } from '@/lib/format/effective';
@@ -93,7 +93,13 @@ export const FormattingToolbar: React.FC<FormattingToolbarProps> = ({
 
   // Selectors show the EFFECTIVE value: the override when set, else the
   // project default — so the toolbar never implies an override that isn't there.
-  const currentFont: string = textStyle.fontFamily || settings.bodyFont;
+  //
+  // Resolved through fontSelectValue so the select's value always matches one
+  // of its options. A legacy run or project carrying a CSS stack would
+  // otherwise leave the select unmatched, and the browser would display the
+  // first option — naming a font the manuscript is not written in.
+  const currentFont: string = fontSelectValue(textStyle.fontFamily || settings.bodyFont);
+  const projectFont: string = fontSelectValue(settings.bodyFont);
   const currentSize: number = textStyle.fontSizePt || settings.bodyFontSizePt;
   const currentAlign: Alignment =
     paragraphAttrs.textAlignOverride || settings.paragraphAlignment;
@@ -129,9 +135,11 @@ export const FormattingToolbar: React.FC<FormattingToolbarProps> = ({
           value={currentFont}
           onChange={(e) => {
             const value = e.target.value;
-            if (value === settings.bodyFont) {
+            if (value === projectFont) {
               // Back to the project default: clear the override rather than
-              // writing the default onto the run.
+              // writing the default onto the run. Compared canonically, so a
+              // project stored with a legacy CSS stack still recognises its own
+              // default and clears instead of pinning it.
               editor.chain().focus().unsetFontFamily().run();
             } else {
               editor.chain().focus().setFontFamily(value).run();

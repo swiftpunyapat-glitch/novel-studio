@@ -11,6 +11,7 @@ import { describe, expect, test, vi, beforeEach } from 'vitest';
  * that make a destructive endpoint safe:
  *
  *   - nothing is deleted before the caller is proven to be the owner
+ *   - nothing is deleted before the typed title is confirmed SERVER-side
  *   - success is never reported when required cleanup failed
  *   - deleting one thing does not touch its siblings
  */
@@ -183,17 +184,61 @@ vi.mock('@/lib/firebase/admin', () => ({
   },
 }));
 
+/** Sentinel meaning "send no request body at all". */
+const NO_BODY = Symbol('no body');
+
+type Confirmation = string | typeof NO_BODY | undefined;
+
+function storedTitle(path: string): string {
+  const title = docs.get(path)?.title;
+  return typeof title === 'string' ? title : '';
+}
+
+/**
+ * Builds the request body.
+ *
+ * `undefined` means "confirm correctly", so tests that are not about the
+ * confirmation read exactly as they did before it existed.
+ */
+function bodyFor(confirmation: Confirmation, actualTitle: string): string | undefined {
+  if (confirmation === NO_BODY) return undefined;
+  const value = confirmation === undefined ? actualTitle : confirmation;
+  return JSON.stringify({ confirmationTitle: value });
+}
+
 async function deleteChapter(
   projectId: string,
   chapterId: string,
-  headers: Record<string, string>
+  headers: Record<string, string>,
+  confirmation?: Confirmation
 ) {
   const { DELETE } = await import(
     '@/app/api/projects/[projectId]/chapters/[chapterId]/route'
   );
   const req = new Request(
     `http://localhost/api/projects/${projectId}/chapters/${chapterId}`,
-    { method: 'DELETE', headers }
+    {
+      method: 'DELETE',
+      headers: { 'Content-Type': 'application/json', ...headers },
+      body: bodyFor(confirmation, storedTitle(`projects/${projectId}/chapters/${chapterId}`)),
+    }
+  );
+  return DELETE(req as never, { params: { projectId, chapterId } });
+}
+
+/** Sends a body this test file would not otherwise be able to express. */
+async function deleteChapterWithRawBody(
+  projectId: string,
+  chapterId: string,
+  headers: Record<string, string>,
+  body: string
+) {
+  const { DELETE } = await import(
+    '@/app/api/projects/[projectId]/chapters/[chapterId]/route'
+  );
+  const req = new Request(
+    `http://localhost/api/projects/${projectId}/chapters/${chapterId}`,
+    { method: 'DELETE', headers: { 'Content-Type': 'application/json', ...headers }, body }
   );
   return DELETE(req as never, { params: { projectId, chapterId } });
 }
@@ -201,14 +246,19 @@ async function deleteChapter(
 async function deleteVolume(
   projectId: string,
   volumeId: string,
-  headers: Record<string, string>
+  headers: Record<string, string>,
+  confirmation?: Confirmation
 ) {
   const { DELETE } = await import(
     '@/app/api/projects/[projectId]/volumes/[volumeId]/route'
   );
   const req = new Request(
     `http://localhost/api/projects/${projectId}/volumes/${volumeId}`,
-    { method: 'DELETE', headers }
+    {
+      method: 'DELETE',
+      headers: { 'Content-Type': 'application/json', ...headers },
+      body: bodyFor(confirmation, storedTitle(`projects/${projectId}/volumes/${volumeId}`)),
+    }
   );
   return DELETE(req as never, { params: { projectId, volumeId } });
 }
@@ -318,6 +368,131 @@ describe('DELETE volume — authorization', () => {
     const res = await deleteVolume(PROJECT_ID, 'nope', asOwner);
     expect(res.status).toBe(404);
     expect(deletedPaths).toHaveLength(0);
+  });
+});
+
+// ===========================================================================
+// Destructive confirmation — enforced by the server, not by the dialog
+// ===========================================================================
+
+describe('Typed-title confirmation', () => {
+  const CHAPTER_A_TITLE = 'Chapter 7';
+  const VOLUME_ONE_TITLE = 'Volume 1';
+
+  beforeEach(() => {
+    verifyIdToken.mockResolvedValue({ uid: OWNER_UID });
+  });
+
+  /** Nothing at all may have happened when a confirmation is refused. */
+  function expectNothingDeleted() {
+    expect(deletedPaths).toHaveLength(0);
+    expect(deletedStoragePrefixes).toHaveLength(0);
+    expect(docs.has(`projects/${PROJECT_ID}/chapters/${CHAPTER_A}`)).toBe(true);
+    expect(docs.has(`projects/${PROJECT_ID}/chapters/${CHAPTER_B}`)).toBe(true);
+    expect(docs.has(`projects/${PROJECT_ID}/volumes/${VOLUME_ONE}`)).toBe(true);
+    expect(docs.has(`publicProjects/${PUBLIC_SLUG}/chapters/${CHAPTER_A}`)).toBe(true);
+  }
+
+  test('a chapter delete with no request body is rejected (400)', async () => {
+    const res = await deleteChapter(PROJECT_ID, CHAPTER_A, asOwner, NO_BODY);
+    expect(res.status).toBe(400);
+    expectNothingDeleted();
+  });
+
+  test('a body without confirmationTitle is rejected (400)', async () => {
+    const res = await deleteChapterWithRawBody(
+      PROJECT_ID,
+      CHAPTER_A,
+      asOwner,
+      JSON.stringify({ reason: 'cleaning up' })
+    );
+    expect(res.status).toBe(400);
+    expectNothingDeleted();
+  });
+
+  test('a non-string confirmationTitle is rejected (400)', async () => {
+    const res = await deleteChapterWithRawBody(
+      PROJECT_ID,
+      CHAPTER_A,
+      asOwner,
+      JSON.stringify({ confirmationTitle: true })
+    );
+    expect(res.status).toBe(400);
+    expectNothingDeleted();
+  });
+
+  test('a malformed body is rejected (400)', async () => {
+    const res = await deleteChapterWithRawBody(PROJECT_ID, CHAPTER_A, asOwner, '{not json');
+    expect(res.status).toBe(400);
+    expectNothingDeleted();
+  });
+
+  test('the wrong title is rejected (409) and nothing is cleaned up', async () => {
+    const res = await deleteChapter(PROJECT_ID, CHAPTER_A, asOwner, 'Chapter 8');
+    expect(res.status).toBe(409);
+    expectNothingDeleted();
+  });
+
+  test('a sibling chapter title does not authorise deleting this one', async () => {
+    // The exact hazard the typed confirmation exists for: a mis-click one row
+    // away in a column of near-identical titles.
+    const res = await deleteChapter(PROJECT_ID, CHAPTER_A, asOwner, 'Chapter 9');
+    expect(res.status).toBe(409);
+    expectNothingDeleted();
+  });
+
+  test('a refused confirmation exposes no internals', async () => {
+    const res = await deleteChapter(PROJECT_ID, CHAPTER_A, asOwner, 'Wrong');
+    const body = await res.json();
+    const text = JSON.stringify(body);
+
+    expect(text).not.toContain(PROJECT_ID);
+    expect(text).not.toContain(CHAPTER_A);
+    expect(text).not.toContain('projects/');
+    expect(body.stack).toBeUndefined();
+  });
+
+  test('the exact title succeeds', async () => {
+    const res = await deleteChapter(PROJECT_ID, CHAPTER_A, asOwner, CHAPTER_A_TITLE);
+    expect(res.status).toBe(200);
+    expect(docs.has(`projects/${PROJECT_ID}/chapters/${CHAPTER_A}`)).toBe(false);
+  });
+
+  test('surrounding whitespace is forgiven, matching the dialog', async () => {
+    const res = await deleteChapter(PROJECT_ID, CHAPTER_A, asOwner, `  ${CHAPTER_A_TITLE} `);
+    expect(res.status).toBe(200);
+  });
+
+  test('ownership is settled before the confirmation is even read', async () => {
+    // A non-owner who knows the title is still a non-owner.
+    verifyIdToken.mockResolvedValue({ uid: OTHER_UID });
+    const res = await deleteChapter(PROJECT_ID, CHAPTER_A, asOwner, CHAPTER_A_TITLE);
+    expect(res.status).toBe(403);
+    expectNothingDeleted();
+  });
+
+  test('a volume delete with the wrong title deletes no chapters (409)', async () => {
+    const res = await deleteVolume(PROJECT_ID, VOLUME_ONE, asOwner, 'Volume 2');
+    expect(res.status).toBe(409);
+    expectNothingDeleted();
+  });
+
+  test('a volume delete with no body is rejected (400)', async () => {
+    const res = await deleteVolume(PROJECT_ID, VOLUME_ONE, asOwner, NO_BODY);
+    expect(res.status).toBe(400);
+    expectNothingDeleted();
+  });
+
+  test('the exact volume title succeeds', async () => {
+    const res = await deleteVolume(PROJECT_ID, VOLUME_ONE, asOwner, VOLUME_ONE_TITLE);
+    expect(res.status).toBe(200);
+    expect(docs.has(`projects/${PROJECT_ID}/volumes/${VOLUME_ONE}`)).toBe(false);
+  });
+
+  test('a chapter title does not authorise deleting the volume it lives in', async () => {
+    const res = await deleteVolume(PROJECT_ID, VOLUME_ONE, asOwner, CHAPTER_A_TITLE);
+    expect(res.status).toBe(409);
+    expectNothingDeleted();
   });
 });
 

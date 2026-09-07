@@ -165,7 +165,7 @@ export default function ProjectWorkspaceLayout({ children }: { children: React.R
    * the tree exactly as it was, which is the honest picture — the chapter is
    * still there.
    */
-  const handleConfirmDelete = async () => {
+  const handleConfirmDelete = async (confirmationTitle: string) => {
     if (!user || !projectId || !deleteTarget) return;
 
     setDeleting(true);
@@ -177,9 +177,15 @@ export default function ProjectWorkspaceLayout({ children }: { children: React.R
           ? `/api/projects/${projectId}/chapters/${deleteTarget.chapter.id}`
           : `/api/projects/${projectId}/volumes/${deleteTarget.volume.id}`;
 
+      // The typed title travels with the request: the server refuses to
+      // delete anything until it matches the title it has stored.
       const res = await fetch(url, {
         method: 'DELETE',
-        headers: { Authorization: `Bearer ${token}` },
+        headers: {
+          Authorization: `Bearer ${token}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ confirmationTitle }),
       });
 
       if (!res.ok) {

@@ -48,6 +48,61 @@ export class CleanupError extends Error {
   }
 }
 
+/**
+ * The typed-title confirmation failed. Nothing has been deleted.
+ *
+ * Separate from CleanupError because it means the opposite thing: cleanup
+ * failed *after* the decision to delete, this one refuses to make it.
+ */
+export class ConfirmationError extends Error {
+  constructor(
+    readonly status: 400 | 409,
+    readonly publicMessage: string
+  ) {
+    super(publicMessage);
+    this.name = 'ConfirmationError';
+  }
+}
+
+/**
+ * Requires the caller to echo the exact stored title before anything is deleted.
+ *
+ * The dialog already asks the author to type it, but a client-side check is a
+ * courtesy, not a control: the route is reachable directly, and a mis-scripted
+ * or replayed request would otherwise destroy a chapter nobody confirmed. The
+ * server compares against the title it just loaded from Firestore, so the
+ * confirmation is checked against the manuscript's real current state rather
+ * than against whatever the client believed it was deleting.
+ *
+ * Called BEFORE any storage, published-copy or Firestore work begins.
+ */
+export async function requireTitleConfirmation(
+  req: Request,
+  actualTitle: string
+): Promise<void> {
+  let body: unknown;
+  try {
+    body = await req.json();
+  } catch {
+    throw new ConfirmationError(400, 'Deletion requires a confirmation title');
+  }
+
+  const confirmation = (body as { confirmationTitle?: unknown } | null)?.confirmationTitle;
+
+  if (typeof confirmation !== 'string') {
+    throw new ConfirmationError(400, 'Deletion requires a confirmation title');
+  }
+
+  // Trimmed on both sides, matching what the dialog compares, so a stray space
+  // is forgiven while a different title is not.
+  if (confirmation.trim() !== actualTitle.trim()) {
+    // 409 rather than 400: the request is well formed, it just does not match
+    // the current title — which is also what a stale client would send after
+    // the chapter was renamed elsewhere.
+    throw new ConfirmationError(409, 'The confirmation title does not match');
+  }
+}
+
 /** Rejects ids that could be reinterpreted as Firestore sub-paths. */
 export function readPathId(value: unknown): string | null {
   if (typeof value !== 'string') return null;

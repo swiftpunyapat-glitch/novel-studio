@@ -7,9 +7,11 @@ import {
 } from '@/lib/server/auth';
 import {
   CleanupError,
+  ConfirmationError,
   deleteChapterCascade,
   readPathId,
   requireChapter,
+  requireTitleConfirmation,
 } from '@/lib/server/cascade-delete';
 
 /**
@@ -18,6 +20,11 @@ import {
  * Authorization is server-side and absolute: a verified Firebase ID token, then
  * an ownership check against the stored `ownerId`. The client's own belief
  * about who owns the project is never part of the decision.
+ *
+ * The body must carry `{ confirmationTitle }` matching the chapter's stored
+ * title. The dialog asks for it too, but this route is reachable without the
+ * dialog, so the check that matters is this one — and it runs before any
+ * cleanup begins.
  */
 
 export const dynamic = 'force-dynamic';
@@ -39,12 +46,19 @@ export async function DELETE(
     await requireProjectOwner(uid, projectId);
     const chapter = await requireChapter(projectId, chapterId);
 
+    // Nothing is touched until the caller proves they meant this chapter.
+    await requireTitleConfirmation(req, chapter.title);
+
     await deleteChapterCascade(projectId, chapterId);
 
     return NextResponse.json({ success: true, chapterId, title: chapter.title });
   } catch (err) {
     if (err instanceof AuthError) {
       return authErrorResponse(err);
+    }
+    if (err instanceof ConfirmationError) {
+      // Refused before the cascade started; the chapter is untouched.
+      return NextResponse.json({ error: err.publicMessage }, { status: err.status });
     }
     if (err instanceof CleanupError) {
       // Required cleanup failed, so the chapter is still there. Saying so

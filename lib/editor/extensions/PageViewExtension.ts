@@ -3,7 +3,9 @@ import { Plugin, PluginKey } from '@tiptap/pm/state';
 import { Decoration, DecorationSet, type EditorView } from '@tiptap/pm/view';
 import {
   computePageSpacers,
+  keepsWithNext,
   spacerSignature,
+  trailingFillPx,
   type PageSpacer,
   type PaginationBlock,
 } from '@/lib/editor/pagination';
@@ -54,6 +56,8 @@ interface PageViewPluginState extends PageViewConfig {
 interface PageViewMeta {
   config?: PageViewConfig;
   spacers?: PageSpacer[];
+  /** Blank height completing the sheet the document ends on. */
+  tailFillPx?: number;
   signature?: string;
 }
 
@@ -65,46 +69,56 @@ const EMPTY_STATE = (config: PageViewConfig): PageViewPluginState => ({
   signature: '',
 });
 
+/** The blank spacer element, used both between pages and after the last one. */
+function spacerElement(heightPx: number): HTMLElement {
+  const el = document.createElement('div');
+  el.className = SPACER_CLASS;
+  el.setAttribute('contenteditable', 'false');
+  el.setAttribute('aria-hidden', 'true');
+  el.style.height = `${heightPx.toFixed(2)}px`;
+  return el;
+}
+
 function buildDecorations(
   spacers: readonly PageSpacer[],
+  tailFillPx: number,
   doc: import('@tiptap/pm/model').Node
 ): DecorationSet {
   const decorations: Decoration[] = [];
 
   for (const spacer of spacers) {
-    const height = `${spacer.fillerPx.toFixed(2)}px`;
-
     if (spacer.kind === 'explicit') {
       // The author's page break stretches to fill the rest of its page, so the
       // following content visibly starts on the next sheet.
       decorations.push(
         Decoration.node(spacer.pos, spacer.pos + spacer.nodeSize, {
           class: 'novel-page-break--paged',
-          style: `height: ${height}`,
+          style: `height: ${spacer.fillerPx.toFixed(2)}px`,
         })
       );
       continue;
     }
 
     decorations.push(
-      Decoration.widget(
-        spacer.pos,
-        () => {
-          const el = document.createElement('div');
-          el.className = SPACER_CLASS;
-          el.setAttribute('contenteditable', 'false');
-          el.setAttribute('aria-hidden', 'true');
-          el.style.height = height;
-          return el;
-        },
-        {
-          side: -1,
-          // Keyed so an unchanged spacer is reused rather than re-created,
-          // which would make the caret flicker while typing.
-          key: `page-spacer-${spacer.pos}-${Math.round(spacer.fillerPx)}`,
-          ignoreSelection: true,
-        }
-      )
+      Decoration.widget(spacer.pos, () => spacerElement(spacer.fillerPx), {
+        side: -1,
+        // Keyed so an unchanged spacer is reused rather than re-created,
+        // which would make the caret flicker while typing.
+        key: `page-spacer-${spacer.pos}-${Math.round(spacer.fillerPx)}`,
+        ignoreSelection: true,
+      })
+    );
+  }
+
+  if (tailFillPx > 0) {
+    // Completes the final sheet, so the document does not appear to stop in
+    // the middle of a piece of paper.
+    decorations.push(
+      Decoration.widget(doc.content.size, () => spacerElement(tailFillPx), {
+        side: 1,
+        key: `page-tail-${Math.round(tailFillPx)}`,
+        ignoreSelection: true,
+      })
     );
   }
 
@@ -178,6 +192,9 @@ function measureBlocks(view: EditorView): PaginationBlock[] {
       // decoration this plugin sets, so it is measured as synthetic space.
       heightPx: isExplicitBreak ? 0 : el.offsetHeight,
       isExplicitBreak,
+      // A scene header belongs to the break above it; the paginator moves the
+      // two together rather than stranding `***` at the foot of a page.
+      keepWithNext: keepsWithNext(entry.type, positions[nodeIndex]?.type),
     });
 
     if (isExplicitBreak) synthetic += el.offsetHeight;
@@ -208,10 +225,11 @@ function pageViewPlugin(): Plugin<PageViewPluginState> {
         }
 
         if (meta?.spacers) {
+          const tailFillPx = meta.tailFillPx ?? 0;
           return {
             ...next,
-            decorations: buildDecorations(meta.spacers, tr.doc),
-            signature: meta.signature ?? spacerSignature(meta.spacers),
+            decorations: buildDecorations(meta.spacers, tailFillPx, tr.doc),
+            signature: meta.signature ?? spacerSignature(meta.spacers, tailFillPx),
           };
         }
 
@@ -250,21 +268,32 @@ function pageViewPlugin(): Plugin<PageViewPluginState> {
 
         if (!state.enabled || state.pageHeightPx <= 0) {
           if (state.signature !== '') {
-            v.dispatch(v.state.tr.setMeta(pageViewKey, { spacers: [], signature: '' }));
+            v.dispatch(
+              v.state.tr.setMeta(pageViewKey, {
+                spacers: [],
+                tailFillPx: 0,
+                signature: '',
+              })
+            );
           }
           return;
         }
 
-        const spacers = computePageSpacers(measureBlocks(v), {
+        const options = {
           pageHeightPx: state.pageHeightPx,
           pageGapPx: state.pageGapPx,
-        });
-        const signature = spacerSignature(spacers);
+        };
+        const blocks = measureBlocks(v);
+        const spacers = computePageSpacers(blocks, options);
+        const tailFillPx = trailingFillPx(blocks, spacers, options);
+        const signature = spacerSignature(spacers, tailFillPx);
 
         // The fixed point: an unchanged layout dispatches nothing.
         if (signature === state.signature) return;
 
-        v.dispatch(v.state.tr.setMeta(pageViewKey, { spacers, signature }));
+        v.dispatch(
+          v.state.tr.setMeta(pageViewKey, { spacers, tailFillPx, signature })
+        );
       };
 
       if (typeof ResizeObserver !== 'undefined') {

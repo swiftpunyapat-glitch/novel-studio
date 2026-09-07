@@ -153,3 +153,22 @@ export function fontOptions(
 
   return options;
 }
+
+/**
+ * The value a font `<select>` must hold for a stored font.
+ *
+ * `fontOptions` canonicalises, so a picker fed the raw stored value would go
+ * unmatched whenever that value is a legacy CSS stack: the option reads
+ * "Sarabun" while the select holds "'Sarabun', sans-serif", and the browser
+ * falls back to displaying the first option — telling the author their
+ * manuscript is in a font it is not.
+ *
+ * This is a DISPLAY resolution only. Nothing is written back: a project keeps
+ * its stored value verbatim until the author picks a different font, at which
+ * point the canonical name of their choice is what gets stored.
+ *
+ * By construction the result is always one of `fontOptions(font)`.
+ */
+export function fontSelectValue(font: string | null | undefined): string {
+  return canonicalFontName(font) ?? DEFAULT_BODY_FONT;
+}
