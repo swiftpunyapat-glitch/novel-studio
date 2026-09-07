@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useState } from 'react';
-import { Chapter } from '@/types/project';
+import { Chapter, resolveChapterType } from '@/types/project';
 import { updateChapterMetadata } from '@/lib/firebase/firestore';
 
 interface ChapterMetadataHeaderProps {
@@ -15,6 +15,7 @@ export const ChapterMetadataHeader: React.FC<ChapterMetadataHeaderProps> = ({
   projectId,
   onUpdate,
 }) => {
+  const sectionType = resolveChapterType(chapter);
   const [title, setTitle] = useState(chapter.title || '');
   const [subtitle, setSubtitle] = useState(chapter.subtitle || '');
   const [chapterNum, setChapterNum] = useState<string>(
@@ -25,10 +26,17 @@ export const ChapterMetadataHeader: React.FC<ChapterMetadataHeaderProps> = ({
 
   const saveHeader = async () => {
     const num = chapterNum.trim() === '' ? null : parseInt(chapterNum, 10);
+    const resolvedNum =
+      sectionType === 'prologue' || sectionType === 'epilogue'
+        ? null
+        : isNaN(num as number)
+        ? null
+        : num;
+
     const payload = {
-      title: title.trim() || 'Untitled Chapter',
+      title: title.trim() || (sectionType === 'prologue' ? 'Prologue' : sectionType === 'epilogue' ? 'Epilogue' : 'Untitled Chapter'),
       subtitle: subtitle.trim() || undefined,
-      chapterNumber: isNaN(num as number) ? null : num,
+      chapterNumber: resolvedNum,
       dateText: dateText.trim() || undefined,
       locationText: locationText.trim() || undefined,
     };
@@ -38,19 +46,29 @@ export const ChapterMetadataHeader: React.FC<ChapterMetadataHeaderProps> = ({
 
   return (
     <div className="mb-10 text-center border-b border-slate-200/60 dark:border-slate-800/60 pb-8 space-y-3 select-none">
-      {/* Chapter Number */}
+      {/* Chapter Number / Section Label */}
       <div className="flex justify-center">
-        <input
-          type="text"
-          placeholder="CHAPTER NUMBER (e.g. 1)"
-          value={chapterNum ? `CHAPTER ${chapterNum}` : ''}
-          onChange={(e) => {
-            const raw = e.target.value.replace(/CHAPTER\s*/i, '');
-            setChapterNum(raw);
-          }}
-          onBlur={saveHeader}
-          className="text-xs font-bold uppercase tracking-widest text-slate-400 bg-transparent text-center focus:outline-none focus:text-indigo-600 transition-colors w-64"
-        />
+        {sectionType === 'prologue' ? (
+          <span className="text-xs font-bold uppercase tracking-widest text-indigo-600 dark:text-indigo-400">
+            PROLOGUE
+          </span>
+        ) : sectionType === 'epilogue' ? (
+          <span className="text-xs font-bold uppercase tracking-widest text-purple-600 dark:text-purple-400">
+            EPILOGUE
+          </span>
+        ) : (
+          <input
+            type="text"
+            placeholder="CHAPTER NUMBER (e.g. 1)"
+            value={chapterNum ? `CHAPTER ${chapterNum}` : ''}
+            onChange={(e) => {
+              const raw = e.target.value.replace(/CHAPTER\s*/i, '');
+              setChapterNum(raw);
+            }}
+            onBlur={saveHeader}
+            className="text-xs font-bold uppercase tracking-widest text-slate-400 bg-transparent text-center focus:outline-none focus:text-indigo-600 transition-colors w-64"
+          />
+        )}
       </div>
 
       {/* Chapter Title */}

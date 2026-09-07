@@ -48,6 +48,10 @@ export interface NovelEditorHandle {
   getSnapshot: () => ManuscriptSnapshot | null;
   /** Flushes local + remote state; resolves once the save settles. */
   flush: () => Promise<void>;
+  /** Explicit remote save. */
+  saveNow: () => Promise<void>;
+  /** Flushes the local IndexedDB mirror without a remote save. */
+  flushLocal: () => Promise<void>;
   getStatus: () => AutosaveStatus;
   hasBlockingConflict: () => boolean;
 }
@@ -87,6 +91,10 @@ export const NovelEditor = forwardRef<NovelEditorHandle, NovelEditorProps>(funct
   );
   const coordinatorRef = useRef<SaveCoordinator | null>(null);
   const editorRef = useRef<Editor | null>(null);
+  const onVariantSavedRef = useRef(onVariantSaved);
+  onVariantSavedRef.current = onVariantSaved;
+  const isActiveVariantRef = useRef(chapter.activeVariantId === variant.id);
+  isActiveVariantRef.current = chapter.activeVariantId === variant.id;
 
   const editor = useEditor({
     extensions: [
@@ -125,6 +133,8 @@ export const NovelEditor = forwardRef<NovelEditorHandle, NovelEditorProps>(funct
   editorRef.current = editor ?? null;
 
   // ---- Coordinator lifecycle -------------------------------------------------
+  // Coordinator lifetime strictly tracks projectId + chapterId + variant.id.
+  // It must NOT recreate when contentVersion advances or parent callbacks re-render.
   useEffect(() => {
     const coordinator = new SaveCoordinator({
       projectId,
@@ -140,22 +150,22 @@ export const NovelEditor = forwardRef<NovelEditorHandle, NovelEditorProps>(funct
           snapshot,
           baseVersion,
           sessionIdRef.current,
-          { isActiveVariant: chapter.activeVariantId === variant.id }
+          { isActiveVariant: isActiveVariantRef.current }
         ),
       onStatusChange: setAutosaveStatus,
       onConflict: setConflict,
-      onVersionChange: (version) => onVariantSaved?.({ contentVersion: version }),
+      onVersionChange: (version) => onVariantSavedRef.current?.({ contentVersion: version }),
     });
 
     coordinatorRef.current = coordinator;
 
     return () => {
-      // Best-effort final flush, then guarantee no timer survives the unmount.
-      void coordinator.flush().finally(() => coordinator.dispose());
+      // Flush local IndexedDB mirror only; never silently remote-save on unmount.
+      void coordinator.flushLocal().finally(() => coordinator.dispose());
       coordinatorRef.current = null;
     };
-    // A different variant means a different coordinator.
-  }, [projectId, chapter.id, chapter.activeVariantId, variant.id, variant, onVariantSaved]);
+    // Recreated ONLY when the selected variant changes.
+  }, [projectId, chapter.id, variant.id]);
 
   // ---- Load-time recovery check (Stage 2D) -----------------------------------
   useEffect(() => {
@@ -179,7 +189,7 @@ export const NovelEditor = forwardRef<NovelEditorHandle, NovelEditorProps>(funct
     return () => {
       cancelled = true;
     };
-  }, [projectId, chapter.id, variant]);
+  }, [projectId, chapter.id, variant.id]);
 
   // ---- Ctrl+S ----------------------------------------------------------------
   useEffect(() => {
@@ -193,19 +203,19 @@ export const NovelEditor = forwardRef<NovelEditorHandle, NovelEditorProps>(funct
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, []);
 
-  // ---- Flush on navigation / tab hide (Stage 2E) -----------------------------
+  // ---- Flush local mirror on navigation / tab hide (no silent remote save) ----
   useEffect(() => {
-    const flush = () => {
-      void coordinatorRef.current?.flush();
+    const flushLocal = () => {
+      void coordinatorRef.current?.flushLocal();
     };
     const onVisibility = () => {
-      if (document.visibilityState === 'hidden') flush();
+      if (document.visibilityState === 'hidden') flushLocal();
     };
 
-    window.addEventListener('pagehide', flush);
+    window.addEventListener('pagehide', flushLocal);
     document.addEventListener('visibilitychange', onVisibility);
     return () => {
-      window.removeEventListener('pagehide', flush);
+      window.removeEventListener('pagehide', flushLocal);
       document.removeEventListener('visibilitychange', onVisibility);
     };
   }, []);
@@ -222,7 +232,7 @@ export const NovelEditor = forwardRef<NovelEditorHandle, NovelEditorProps>(funct
     return () => window.removeEventListener('beforeunload', handleBeforeUnload);
   }, []);
 
-  // ---- Imperative handle for Checkpoint (Stage 2G) ---------------------------
+  // ---- Imperative handle for Checkpoint & Page interactions ------------------
   useImperativeHandle(
     ref,
     () => ({
@@ -230,11 +240,21 @@ export const NovelEditor = forwardRef<NovelEditorHandle, NovelEditorProps>(funct
       flush: async () => {
         await coordinatorRef.current?.flush();
       },
+      saveNow: async () => {
+        await coordinatorRef.current?.saveNow();
+      },
+      flushLocal: async () => {
+        await coordinatorRef.current?.flushLocal();
+      },
       getStatus: () => coordinatorRef.current?.getStatus() ?? 'saved',
       hasBlockingConflict: () => coordinatorRef.current?.getConflict() != null,
     }),
     []
   );
+
+  const handleManualSave = useCallback(async () => {
+    await coordinatorRef.current?.saveNow();
+  }, []);
 
   // ---- Conflict resolution ---------------------------------------------------
   const handleReloadRemote = useCallback(() => {
@@ -327,6 +347,7 @@ export const NovelEditor = forwardRef<NovelEditorHandle, NovelEditorProps>(funct
         wordCount={wordCount}
         settings={documentSettings}
         onOpenParagraphSettings={() => setParagraphDialogOpen(true)}
+        onSave={handleManualSave}
       />
 
       <div className="flex-1 overflow-y-auto novel-canvas-wrapper">

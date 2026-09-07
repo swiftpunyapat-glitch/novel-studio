@@ -98,7 +98,8 @@ export async function createChapter(
   volumeId: string,
   title: string,
   chapterNumber: number | null,
-  order: number
+  order: number,
+  chapterType: import('@/types/project').ChapterType = 'chapter'
 ): Promise<{ chapter: Chapter; initialVariant: DraftVariant }> {
   const chapterId = doc(collection(db, 'projects', projectId, 'chapters')).id;
   const variantId = doc(collection(db, 'projects', projectId, 'chapters', chapterId, 'variants')).id;
@@ -107,7 +108,7 @@ export async function createChapter(
     id: variantId,
     chapterId,
     projectId,
-    name: 'Draft A',
+    name: 'Main',
     status: 'candidate',
     content: {
       type: 'doc',
@@ -136,6 +137,7 @@ export async function createChapter(
     chapterNumber,
     title,
     order,
+    chapterType,
     activeVariantId: variantId,
     totalWordCount: 0,
     createdAt: Date.now(),
@@ -366,6 +368,118 @@ export async function createVariantFromContent(
     latestRevisionNumber: 0,
     lastSavedAt: now,
     lastEditedBySessionId: 'conflict-rescue',
+    createdAt: now,
+    updatedAt: now,
+  };
+
+  await setDoc(variantRef, variant);
+  return variant;
+}
+
+/** Creates a new sibling draft variant for a chapter. */
+export async function createDraftVariant(
+  projectId: string,
+  chapterId: string,
+  name: string,
+  initialContent?: DraftVariant['content']
+): Promise<DraftVariant> {
+  const variantsCol = collection(db, 'projects', projectId, 'chapters', chapterId, 'variants');
+  const variantRef = doc(variantsCol);
+  const now = Date.now();
+
+  const variant: DraftVariant = {
+    id: variantRef.id,
+    chapterId,
+    projectId,
+    name: name.trim() || 'Variant 1',
+    status: 'draft',
+    content: initialContent ?? {
+      type: 'doc',
+      content: [{ type: 'paragraph', content: [{ type: 'text', text: '' }] }],
+    },
+    plainText: '',
+    wordCount: 0,
+    characterCount: 0,
+    contentVersion: 1,
+    latestRevisionNumber: 0,
+    lastSavedAt: now,
+    lastEditedBySessionId: 'initial',
+    createdAt: now,
+    updatedAt: now,
+  };
+
+  await setDoc(variantRef, variant);
+  return variant;
+}
+
+/** Renames an existing draft variant. */
+export async function renameDraftVariant(
+  projectId: string,
+  chapterId: string,
+  variantId: string,
+  name: string
+): Promise<void> {
+  const variantRef = doc(db, 'projects', projectId, 'chapters', chapterId, 'variants', variantId);
+  await updateDoc(variantRef, {
+    name: name.trim(),
+    updatedAt: Date.now(),
+  });
+}
+
+/** Sets a variant as the chapter's Main variant (updates activeVariantId and totalWordCount). */
+export async function setMainDraftVariant(
+  projectId: string,
+  chapterId: string,
+  variantId: string
+): Promise<void> {
+  const variantRef = doc(db, 'projects', projectId, 'chapters', chapterId, 'variants', variantId);
+  const chapterRef = doc(db, 'projects', projectId, 'chapters', chapterId);
+
+  await runTransaction(db, async (tx) => {
+    const vSnap = await tx.get(variantRef);
+    if (!vSnap.exists()) {
+      throw new Error('Draft variant not found');
+    }
+    const variantData = vSnap.data() as DraftVariant;
+    tx.update(chapterRef, {
+      activeVariantId: variantId,
+      totalWordCount: variantData.wordCount ?? 0,
+      updatedAt: Date.now(),
+    });
+  });
+}
+
+/** Duplicates a variant's content into a new sibling variant. */
+export async function duplicateDraftVariant(
+  projectId: string,
+  chapterId: string,
+  sourceVariant: DraftVariant,
+  newName: string,
+  currentSnapshot?: ManuscriptSnapshot
+): Promise<DraftVariant> {
+  const content = currentSnapshot?.content ?? sourceVariant.content;
+  const plainText = currentSnapshot?.plainText ?? (sourceVariant.plainText ?? '');
+  const wordCount = currentSnapshot?.wordCount ?? (sourceVariant.wordCount ?? 0);
+  const characterCount = currentSnapshot?.characterCount ?? (sourceVariant.characterCount ?? 0);
+
+  const variantsCol = collection(db, 'projects', projectId, 'chapters', chapterId, 'variants');
+  const variantRef = doc(variantsCol);
+  const now = Date.now();
+
+  const variant: DraftVariant = {
+    id: variantRef.id,
+    chapterId,
+    projectId,
+    name: newName.trim() || `${sourceVariant.name} (Copy)`,
+    status: 'draft',
+    content,
+    plainText,
+    wordCount,
+    characterCount,
+    contentVersion: 1,
+    latestRevisionNumber: 0,
+    lastSavedAt: now,
+    lastEditedBySessionId: 'duplicate',
     createdAt: now,
     updatedAt: now,
   };

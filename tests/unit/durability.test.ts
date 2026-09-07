@@ -115,6 +115,63 @@ describe('1. Normal save increments contentVersion', () => {
     expect(state.version).toBe(3);
     expect(state.text).toBe('two');
   });
+
+  test('regression: same session saves v5 -> v6 -> v7 without false conflict', async () => {
+    const { state, save } = makeRemote('initial', 5);
+    const { coordinator } = makeCoordinator(save, 5);
+
+    coordinator.handleChange(snap('v6 edit'));
+    await coordinator.saveNow();
+    expect(state.version).toBe(6);
+    expect(coordinator.getBaseVersion()).toBe(6);
+    expect(coordinator.getStatus()).toBe('saved');
+
+    coordinator.handleChange(snap('v7 edit'));
+    await coordinator.saveNow();
+    expect(state.version).toBe(7);
+    expect(coordinator.getBaseVersion()).toBe(7);
+    expect(coordinator.getStatus()).toBe('saved');
+    expect(coordinator.getConflict()).toBeNull();
+  });
+});
+
+describe('Manual Remote Save & Local Mirroring', () => {
+  test('typing updates mirror only and does NOT trigger remote save automatically', async () => {
+    vi.useFakeTimers();
+    const { save } = makeRemote('original', 1);
+    const { coordinator } = makeCoordinator(save, 1);
+
+    coordinator.handleChange(snap('just typing away'));
+    expect(coordinator.getStatus()).toBe('dirty');
+
+    // Advance timers well beyond any debounce or maxWait
+    await vi.advanceTimersByTimeAsync(15000);
+
+    // Save must NOT have been called
+    expect(save).not.toHaveBeenCalled();
+    expect(coordinator.getStatus()).toBe('dirty');
+
+    vi.useRealTimers();
+    // But manual saveNow() triggers the remote save immediately
+    await coordinator.saveNow();
+    expect(save).toHaveBeenCalledTimes(1);
+    expect(coordinator.getStatus()).toBe('saved');
+  });
+
+  test('flushLocal flushes the IndexedDB mirror without a remote save', async () => {
+    const { save } = makeRemote('original', 1);
+    const { coordinator } = makeCoordinator(save, 1);
+
+    coordinator.handleChange(snap('buffered in mirror only'));
+    await coordinator.flushLocal();
+
+    expect(save).not.toHaveBeenCalled();
+
+    const mirror = await getMirror(PROJECT, CHAPTER, VARIANT);
+    expect(mirror).not.toBeNull();
+    expect(mirror!.plainText).toBe('buffered in mirror only');
+    expect(mirror!.dirty).toBe(true);
+  });
 });
 
 describe('2. Stale baseVersion is rejected', () => {
