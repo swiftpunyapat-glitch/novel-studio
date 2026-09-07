@@ -5,13 +5,21 @@ import {
   getDocs,
   setDoc,
   updateDoc,
-  deleteDoc,
   query,
   where,
   orderBy,
+  runTransaction,
 } from 'firebase/firestore';
 import { db } from './client';
-import { Project, Volume, Chapter, DraftVariant, Revision, DEFAULT_DOCUMENT_SETTINGS } from '@/types/project';
+import {
+  Project,
+  Volume,
+  Chapter,
+  DraftVariant,
+  Revision,
+  DEFAULT_DOCUMENT_SETTINGS,
+  readContentVersion,
+} from '@/types/project';
 import { Character } from '@/types/character';
 
 // ==================== PROJECTS ====================
@@ -113,7 +121,8 @@ export async function createChapter(
     plainText: '',
     wordCount: 0,
     characterCount: 0,
-    latestRevisionNumber: 1,
+    contentVersion: 1,
+    latestRevisionNumber: 0,
     lastSavedAt: Date.now(),
     lastEditedBySessionId: 'initial',
     createdAt: Date.now(),
@@ -173,73 +182,196 @@ export async function getVariants(projectId: string, chapterId: string): Promise
   return snapshot.docs.map((d) => d.data() as DraftVariant);
 }
 
+/** Everything a versioned save needs from the editor. */
+export interface ManuscriptSnapshot {
+  content: DraftVariant['content'];
+  plainText: string;
+  wordCount: number;
+  characterCount: number;
+}
+
+export type SaveVariantResult =
+  | { status: 'saved'; contentVersion: number; savedAt: number }
+  | {
+      status: 'conflict';
+      remoteVersion: number;
+      baseVersion: number;
+      remote: ManuscriptSnapshot;
+    };
+
+/**
+ * Versioned, atomic manuscript save. (Audit H4 / M5 / Stage 2A + 2I)
+ *
+ * The previous implementation was a blind `updateDoc` followed by a second,
+ * unrelated `updateDoc` — last write wins, and a failure between the two left
+ * chapter and variant metadata inconsistent.
+ *
+ * Now a single transaction reads the stored variant, refuses to write unless
+ * its `contentVersion` still equals the caller's `baseVersion`, and commits the
+ * content, all derived metadata and the incremented version together. On
+ * mismatch nothing is written and the caller receives the remote content so the
+ * conflict can be resolved without losing either side.
+ */
 export async function saveVariantContent(
   projectId: string,
   chapterId: string,
   variantId: string,
-  content: DraftVariant['content'],
-  plainText: string,
-  wordCount: number,
-  characterCount: number,
-  sessionId: string
-): Promise<void> {
-  const now = Date.now();
+  snapshot: ManuscriptSnapshot,
+  baseVersion: number,
+  sessionId: string,
+  options: { isActiveVariant?: boolean } = {}
+): Promise<SaveVariantResult> {
   const variantRef = doc(db, 'projects', projectId, 'chapters', chapterId, 'variants', variantId);
-  await updateDoc(variantRef, {
-    content,
-    plainText,
-    wordCount,
-    characterCount,
-    lastSavedAt: now,
-    lastEditedBySessionId: sessionId,
-    updatedAt: now,
-  });
-
   const chapterRef = doc(db, 'projects', projectId, 'chapters', chapterId);
-  await updateDoc(chapterRef, {
-    totalWordCount: wordCount,
-    updatedAt: now,
+
+  return runTransaction(db, async (tx) => {
+    const variantSnap = await tx.get(variantRef);
+    if (!variantSnap.exists()) {
+      throw new Error('Draft variant no longer exists');
+    }
+
+    const remote = variantSnap.data() as DraftVariant;
+    const remoteVersion = readContentVersion(remote);
+
+    if (remoteVersion !== baseVersion) {
+      // Another device advanced this variant. Write nothing.
+      return {
+        status: 'conflict' as const,
+        remoteVersion,
+        baseVersion,
+        remote: {
+          content: remote.content,
+          plainText: remote.plainText ?? '',
+          wordCount: remote.wordCount ?? 0,
+          characterCount: remote.characterCount ?? 0,
+        },
+      };
+    }
+
+    const now = Date.now();
+    const nextVersion = remoteVersion + 1;
+
+    tx.update(variantRef, {
+      content: snapshot.content,
+      plainText: snapshot.plainText,
+      wordCount: snapshot.wordCount,
+      characterCount: snapshot.characterCount,
+      contentVersion: nextVersion,
+      lastSavedAt: now,
+      lastEditedBySessionId: sessionId,
+      updatedAt: now,
+    });
+
+    // chapter.totalWordCount tracks the ACTIVE variant only (see types/project.ts),
+    // so editing a non-active variant must not clobber it.
+    if (options.isActiveVariant !== false) {
+      tx.update(chapterRef, {
+        totalWordCount: snapshot.wordCount,
+        updatedAt: now,
+      });
+    }
+
+    return { status: 'saved' as const, contentVersion: nextVersion, savedAt: now };
   });
 }
 
+/**
+ * Creates an immutable revision snapshot with a transactionally allocated
+ * number. (Audit M6 / Stage 2H)
+ *
+ * The number is read and written inside the same transaction, so two devices
+ * checkpointing concurrently serialise: one commits, the other retries against
+ * the updated counter and receives the next number. Duplicate `revisionNumber`
+ * values are therefore impossible.
+ *
+ * `content` must come from the LIVE editor, never from cached React state.
+ */
 export async function createRevisionCheckpoint(
   projectId: string,
   chapterId: string,
   variantId: string,
-  content: DraftVariant['content'],
-  plainText: string,
-  wordCount: number,
+  snapshot: ManuscriptSnapshot,
   createdBy: string,
   label?: string,
   trigger: Revision['trigger'] = 'manual'
 ): Promise<Revision> {
-  const revisionId = doc(collection(db, 'projects', projectId, 'chapters', chapterId, 'variants', variantId, 'revisions')).id;
-  const variant = await getVariant(projectId, chapterId, variantId);
-  const revNum = (variant?.latestRevisionNumber || 0) + 1;
+  const variantRef = doc(db, 'projects', projectId, 'chapters', chapterId, 'variants', variantId);
+  const revisionsCol = collection(
+    db, 'projects', projectId, 'chapters', chapterId, 'variants', variantId, 'revisions'
+  );
 
-  const revision: Revision = {
-    id: revisionId,
-    variantId,
+  return runTransaction(db, async (tx) => {
+    const variantSnap = await tx.get(variantRef);
+    if (!variantSnap.exists()) {
+      throw new Error('Draft variant no longer exists');
+    }
+
+    const variant = variantSnap.data() as DraftVariant;
+    const revisionNumber = (variant.latestRevisionNumber || 0) + 1;
+    const revisionRef = doc(revisionsCol);
+
+    const revision: Revision = {
+      id: revisionRef.id,
+      variantId,
+      chapterId,
+      projectId,
+      revisionNumber,
+      trigger,
+      content: snapshot.content,
+      plainText: snapshot.plainText,
+      wordCount: snapshot.wordCount,
+      createdAt: Date.now(),
+      createdBy,
+      ...(label ? { label } : {}),
+    };
+
+    tx.set(revisionRef, revision);
+    tx.update(variantRef, {
+      latestRevisionNumber: revisionNumber,
+      updatedAt: Date.now(),
+    });
+
+    return revision;
+  });
+}
+
+/**
+ * Creates a new draft variant from content that could not be saved.
+ * (Stage 2B — the preferred safe escape hatch from a conflict.)
+ *
+ * Nothing is overwritten: the remote variant keeps the other device's work and
+ * this local content becomes a sibling draft the author can reconcile by hand.
+ */
+export async function createVariantFromContent(
+  projectId: string,
+  chapterId: string,
+  snapshot: ManuscriptSnapshot,
+  name: string
+): Promise<DraftVariant> {
+  const variantsCol = collection(db, 'projects', projectId, 'chapters', chapterId, 'variants');
+  const variantRef = doc(variantsCol);
+  const now = Date.now();
+
+  const variant: DraftVariant = {
+    id: variantRef.id,
     chapterId,
     projectId,
-    revisionNumber: revNum,
-    label,
-    trigger,
-    content,
-    plainText,
-    wordCount,
-    createdAt: Date.now(),
-    createdBy,
+    name,
+    status: 'draft',
+    content: snapshot.content,
+    plainText: snapshot.plainText,
+    wordCount: snapshot.wordCount,
+    characterCount: snapshot.characterCount,
+    contentVersion: 1,
+    latestRevisionNumber: 0,
+    lastSavedAt: now,
+    lastEditedBySessionId: 'conflict-rescue',
+    createdAt: now,
+    updatedAt: now,
   };
 
-  await setDoc(doc(db, 'projects', projectId, 'chapters', chapterId, 'variants', variantId, 'revisions', revisionId), revision);
-  
-  await updateDoc(doc(db, 'projects', projectId, 'chapters', chapterId, 'variants', variantId), {
-    latestRevisionNumber: revNum,
-    updatedAt: Date.now(),
-  });
-
-  return revision;
+  await setDoc(variantRef, variant);
+  return variant;
 }
 
 export async function getRevisions(projectId: string, chapterId: string, variantId: string): Promise<Revision[]> {

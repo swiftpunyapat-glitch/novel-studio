@@ -7,4 +7,16 @@ export interface UserPreferences {
   updatedAt: number;
 }
 
-export type AutosaveStatus = 'idle' | 'saving' | 'saved' | 'offline_pending' | 'error';
+/**
+ * Autosave state machine states. (Stage 2E)
+ *
+ * `dirty`  — edited locally, mirrored, not yet sent
+ * `conflict` — another device advanced this variant; awaiting the author
+ */
+export type AutosaveStatus =
+  | 'saved'
+  | 'dirty'
+  | 'saving'
+  | 'offline_pending'
+  | 'conflict'
+  | 'error';

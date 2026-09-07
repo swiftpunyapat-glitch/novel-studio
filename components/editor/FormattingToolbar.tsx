@@ -20,6 +20,8 @@ import {
   RefreshCw,
   AlertCircle,
   Search,
+  PencilLine,
+  GitMerge,
 } from 'lucide-react';
 import { AutosaveStatus } from '@/types/editor';
 
@@ -202,6 +204,19 @@ export const FormattingToolbar: React.FC<FormattingToolbarProps> = ({
 
         {/* Autosave Status Badge */}
         <div className="flex items-center gap-1.5">
+          {autosaveStatus === 'dirty' && (
+            <span className="text-slate-400 flex items-center gap-1 font-sans" title="Edited — saving shortly">
+              <PencilLine className="w-3.5 h-3.5" /> Unsaved
+            </span>
+          )}
+          {autosaveStatus === 'conflict' && (
+            <span
+              className="text-amber-600 dark:text-amber-400 flex items-center gap-1 font-sans font-semibold"
+              title="This chapter changed on another device"
+            >
+              <GitMerge className="w-3.5 h-3.5" /> Conflict
+            </span>
+          )}
           {autosaveStatus === 'saving' && (
             <span className="text-amber-500 flex items-center gap-1 font-sans">
               <RefreshCw className="w-3.5 h-3.5 animate-spin" /> Saving...
@@ -213,7 +228,7 @@ export const FormattingToolbar: React.FC<FormattingToolbarProps> = ({
             </span>
           )}
           {autosaveStatus === 'offline_pending' && (
-            <span className="text-amber-600 dark:text-amber-400 flex items-center gap-1 font-sans" title="Offline - Saved to local cache">
+            <span className="text-amber-600 dark:text-amber-400 flex items-center gap-1 font-sans" title="Offline — saved to this device, will sync when reconnected">
               <AlertCircle className="w-3.5 h-3.5" /> Offline Pending
             </span>
           )}

@@ -21,6 +21,33 @@ service cloud.firestore {
         request.auth.uid == projectData(projectId).ownerId;
     }
 
+    // Legacy variants predate contentVersion; absent is treated as 0 so the
+    // first versioned save from a migrated client lands on 1.
+    function storedVersion() {
+      return ('contentVersion' in resource.data)
+        ? resource.data.contentVersion
+        : 0;
+    }
+
+    function incomingVersion() {
+      return ('contentVersion' in request.resource.data)
+        ? request.resource.data.contentVersion
+        : 0;
+    }
+
+    function contentUnchanged() {
+      return request.resource.data.content == resource.data.content
+        && request.resource.data.plainText == resource.data.plainText;
+    }
+
+    function validVersionStep() {
+      return incomingVersion() is int
+        && (
+          incomingVersion() == storedVersion() + 1
+          || (incomingVersion() == storedVersion() && contentUnchanged())
+        );
+    }
+
     // ---------- 1. User profiles and preferences ----------
     match /users/{userId} {
       allow read, write: if isOwner(userId);
@@ -51,7 +78,17 @@ service cloud.firestore {
         allow read, write: if isProjectOwner(projectId);
 
         match /variants/{variantId} {
-          allow read, write: if isProjectOwner(projectId);
+          allow get, list: if isProjectOwner(projectId);
+          allow create, delete: if isProjectOwner(projectId);
+
+          // AUDIT H4 / Stage 2A: optimistic concurrency enforced server-side.
+          //
+          // A content-bearing save must advance contentVersion by exactly one.
+          // Metadata-only updates (rename, status change, revision counter) may
+          // leave the version alone, but only while content is untouched.
+          // Client logic alone is not trusted: a stale or buggy client cannot
+          // skip, reuse or rewind a version to clobber another device's work.
+          allow update: if isProjectOwner(projectId) && validVersionStep();
 
           // AUDIT C4: revisions are append-only.
           // The previous `allow read, write` expanded to create + update +

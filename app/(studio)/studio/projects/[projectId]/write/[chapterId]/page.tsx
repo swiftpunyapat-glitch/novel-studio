@@ -1,12 +1,13 @@
 'use client';
 
-import React, { useEffect, useState, useCallback } from 'react';
+import React, { useEffect, useState, useCallback, useRef } from 'react';
 import { useParams } from 'next/navigation';
 import { getProject, getChapter, getVariant, getVariants, createRevisionCheckpoint } from '@/lib/firebase/firestore';
 import { useAuth } from '@/lib/firebase/auth';
 import { Project, Chapter, DraftVariant, Revision } from '@/types/project';
-import { NovelEditor } from '@/components/editor/NovelEditor';
-import { Loader2, GitBranch, History, Check, BookmarkPlus } from 'lucide-react';
+import { NovelEditor, type NovelEditorHandle } from '@/components/editor/NovelEditor';
+import { performCheckpoint } from '@/lib/editor/checkpoint';
+import { Loader2, GitBranch, BookmarkPlus } from 'lucide-react';
 import { Button } from '@/components/ui/Button';
 
 export default function ChapterWritingPage() {
@@ -21,6 +22,7 @@ export default function ChapterWritingPage() {
   const [variants, setVariants] = useState<DraftVariant[]>([]);
   const [loading, setLoading] = useState(true);
   const [checkpointing, setCheckpointing] = useState(false);
+  const editorRef = useRef<NovelEditorHandle | null>(null);
 
   const loadData = useCallback(async () => {
     if (!projectId || !chapterId) return;
@@ -51,23 +53,51 @@ export default function ChapterWritingPage() {
     loadData();
   }, [loadData]);
 
+  /**
+   * Stage 2G: a checkpoint must freeze exactly what the author sees.
+   *
+   * The previous version passed `variant.content` from React state, which only
+   * refreshes after a successful autosave — so checkpointing inside the debounce
+   * window, or after a failed save, silently froze older text and publishing
+   * then served it.
+   *
+   * Now: flush pending state, refuse while a conflict is unresolved, and read
+   * the snapshot directly from the live Tiptap instance.
+   */
   const handleCreateCheckpoint = async () => {
     if (!project || !chapter || !variant || !user) return;
+
+    const handle = editorRef.current;
+    if (!handle) return;
+
     setCheckpointing(true);
     try {
-      await createRevisionCheckpoint(
-        projectId,
-        chapter.id,
-        variant.id,
-        variant.content,
-        variant.plainText,
-        variant.wordCount,
-        user.uid,
-        `Manual Checkpoint #${variant.latestRevisionNumber + 1}`
+      const result = await performCheckpoint(handle, (snapshot) =>
+        createRevisionCheckpoint(
+          projectId,
+          chapter.id,
+          variant.id,
+          snapshot,
+          user.uid,
+          'Manual Checkpoint'
+        )
       );
-      alert('Revision checkpoint created successfully.');
-    } catch (err) {
-      console.error('Error creating checkpoint', err);
+
+      if (result.status === 'created') {
+        setVariant((prev) =>
+          prev ? { ...prev, latestRevisionNumber: result.revision.revisionNumber } : prev
+        );
+        alert(`Revision checkpoint #${result.revision.revisionNumber} created.`);
+      } else if (result.status === 'blocked' && result.reason === 'conflict') {
+        alert(
+          'This chapter changed on another device. Resolve the conflict before creating a checkpoint.'
+        );
+      } else if (result.status === 'blocked') {
+        alert('The editor is not ready yet. Try again in a moment.');
+      } else {
+        console.error('Error creating checkpoint', result.error);
+        alert('Could not create the checkpoint. Your text has not been changed.');
+      }
     } finally {
       setCheckpointing(false);
     }
@@ -124,6 +154,7 @@ export default function ChapterWritingPage() {
 
       {/* Novel Editor */}
       <NovelEditor
+        ref={editorRef}
         projectId={projectId}
         chapter={chapter}
         variant={variant}
