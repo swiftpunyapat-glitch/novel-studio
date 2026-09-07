@@ -1,22 +1,27 @@
 'use client';
 
 import React, { useMemo, useState } from 'react';
-import { Download, Loader2, FileText } from 'lucide-react';
+import { Download, Loader2, FileText, FileCode2 } from 'lucide-react';
 import type { Chapter, Project, Volume } from '@/types/project';
 import {
   exportManuscript,
+  exportManuscriptMarkdown,
   exportFilename,
   selectChapters,
+  type ExportFormat,
   type ExportScope,
 } from '@/lib/docx/export-client';
 import { Button } from '@/components/ui/Button';
 
 /**
- * Export dialog. (Stage 3J)
+ * Export dialog. (Stage 3J + Markdown)
  *
  * All four scopes are callable: Current Chapter, Selected Chapters, Current
  * Volume, Entire Manuscript. A scope with nothing to export is disabled rather
  * than offered and then failing.
+ *
+ * The scope is chosen once and both format buttons use it, so choosing .md is
+ * never a second trip through the same decision.
  */
 
 interface ExportDialogProps {
@@ -50,7 +55,8 @@ export const ExportDialog: React.FC<ExportDialogProps> = ({
   const [selected, setSelected] = useState<Set<string>>(
     new Set(currentChapter ? [currentChapter.id] : [])
   );
-  const [busy, setBusy] = useState(false);
+  // Which format is currently running, so only the pressed button spins.
+  const [busy, setBusy] = useState<ExportFormat | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   const request = useMemo(
@@ -69,22 +75,33 @@ export const ExportDialog: React.FC<ExportDialogProps> = ({
     [request, chapters, volumes]
   );
 
-  const filename = exportFilename(scope, project.title, {
-    chapter: currentChapter,
-    volume: volumes.find((v) => v.id === volumeId),
-    count: resolved.length,
-  });
+  const filenameFor = (format: ExportFormat) =>
+    exportFilename(
+      scope,
+      project.title,
+      {
+        chapter: currentChapter,
+        volume: volumes.find((v) => v.id === volumeId),
+        count: resolved.length,
+      },
+      format
+    );
 
-  const handleExport = async () => {
-    setBusy(true);
+  const handleExport = async (format: ExportFormat) => {
+    setBusy(format);
     setError(null);
     try {
-      await exportManuscript(request, project.documentSettings, getIdToken);
+      if (format === 'docx') {
+        await exportManuscript(request, project.documentSettings, getIdToken);
+      } else {
+        // Markdown is rendered in the browser; no server round trip.
+        await exportManuscriptMarkdown(request);
+      }
       onClose();
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Export failed');
     } finally {
-      setBusy(false);
+      setBusy(null);
     }
   };
 
@@ -132,7 +149,7 @@ export const ExportDialog: React.FC<ExportDialogProps> = ({
         <div className="flex items-center gap-2 border-b border-slate-200 dark:border-slate-800 p-5">
           <Download className="h-5 w-5 text-indigo-600" />
           <h2 id="export-title" className="text-lg font-bold text-slate-900 dark:text-white">
-            Export to Word
+            Export manuscript
           </h2>
         </div>
 
@@ -211,7 +228,16 @@ export const ExportDialog: React.FC<ExportDialogProps> = ({
               {resolved.length} chapter{resolved.length === 1 ? '' : 's'} · A5 148 × 210 mm ·{' '}
               {project.documentSettings.bodyFont} {project.documentSettings.bodyFontSizePt}pt
             </p>
-            <p className="mt-1 font-mono text-slate-700 dark:text-slate-300">{filename}</p>
+            <p className="mt-1 font-mono text-slate-700 dark:text-slate-300">
+              {filenameFor('docx')}
+            </p>
+            <p className="font-mono text-slate-700 dark:text-slate-300">
+              {filenameFor('md')}
+            </p>
+            <p className="mt-1.5 text-slate-500">
+              Markdown keeps the text, structure and scene metadata for reading and
+              analysis; it does not carry print layout.
+            </p>
           </div>
 
           {error && (
@@ -222,20 +248,34 @@ export const ExportDialog: React.FC<ExportDialogProps> = ({
         </div>
 
         <div className="flex justify-end gap-2 border-t border-slate-200 dark:border-slate-800 p-5">
-          <Button variant="ghost" onClick={onClose} disabled={busy}>
+          <Button variant="ghost" onClick={onClose} disabled={busy !== null}>
             Cancel
           </Button>
           <Button
             variant="primary"
-            onClick={handleExport}
-            disabled={busy || resolved.length === 0}
+            onClick={() => handleExport('docx')}
+            disabled={busy !== null || resolved.length === 0}
+            title={filenameFor('docx')}
           >
-            {busy ? (
+            {busy === 'docx' ? (
               <Loader2 className="mr-1.5 h-4 w-4 animate-spin" />
             ) : (
               <Download className="mr-1.5 h-4 w-4" />
             )}
             Export .docx
+          </Button>
+          <Button
+            variant="primary"
+            onClick={() => handleExport('md')}
+            disabled={busy !== null || resolved.length === 0}
+            title={filenameFor('md')}
+          >
+            {busy === 'md' ? (
+              <Loader2 className="mr-1.5 h-4 w-4 animate-spin" />
+            ) : (
+              <FileCode2 className="mr-1.5 h-4 w-4" />
+            )}
+            Export .md
           </Button>
         </div>
       </div>

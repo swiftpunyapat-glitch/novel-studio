@@ -418,11 +418,11 @@ export default function ProjectWorkspaceLayout({ children }: { children: React.R
             title={
               chapters.length === 0
                 ? 'Create a chapter before exporting'
-                : 'Export the manuscript to Word (.docx)'
+                : 'Export manuscript as Word (.docx) or Markdown (.md)'
             }
             className="w-full flex items-center gap-2 py-2 px-2.5 rounded-md text-xs font-medium transition-colors text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800 disabled:opacity-40 disabled:cursor-not-allowed"
           >
-            <Download className="w-4 h-4" /> Export to Word
+            <Download className="w-4 h-4" /> Export
           </button>
         </div>
       </aside>
