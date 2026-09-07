@@ -2,9 +2,10 @@
 
 import React, { useEffect, useState, useCallback } from 'react';
 import Link from 'next/link';
-import { useParams, usePathname } from 'next/navigation';
+import { useParams, usePathname, useRouter } from 'next/navigation';
 import { useAuth } from '@/lib/firebase/auth';
 import { ExportDialog } from '@/components/editor/ExportDialog';
+import { DeleteSectionDialog } from '@/components/editor/DeleteSectionDialog';
 import { getProject, getVolumes, getChapters, createVolume, createChapter } from '@/lib/firebase/firestore';
 import { Project, Volume, Chapter, ChapterType, resolveChapterType } from '@/types/project';
 import { 
@@ -18,7 +19,8 @@ import {
   ChevronRight, 
   ChevronDown, 
   FileText, 
-  Loader2 
+  Loader2,
+  Trash2
 } from 'lucide-react';
 import { Button } from '@/components/ui/Button';
 import { Input } from '@/components/ui/Input';
@@ -41,7 +43,13 @@ export default function ProjectWorkspaceLayout({ children }: { children: React.R
   const [sectionType, setSectionType] = useState<ChapterType>('chapter');
   const [sectionTitle, setSectionTitle] = useState('');
   const [creatingSection, setCreatingSection] = useState(false);
+  const [deleteTarget, setDeleteTarget] = useState<
+    { kind: 'chapter'; chapter: Chapter } | { kind: 'volume'; volume: Volume } | null
+  >(null);
+  const [deleting, setDeleting] = useState(false);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
   const { user } = useAuth();
+  const router = useRouter();
 
   const loadData = useCallback(async () => {
     if (!projectId) return;
@@ -150,6 +158,67 @@ export default function ProjectWorkspaceLayout({ children }: { children: React.R
     }
   };
 
+  /**
+   * Deletion is server-side. The client never removes documents itself: the
+   * route holds the ownership check and the cascade, and the sidebar only
+   * reflects a deletion the server confirmed. A failed call therefore leaves
+   * the tree exactly as it was, which is the honest picture — the chapter is
+   * still there.
+   */
+  const handleConfirmDelete = async () => {
+    if (!user || !projectId || !deleteTarget) return;
+
+    setDeleting(true);
+    setDeleteError(null);
+    try {
+      const token = await user.getIdToken();
+      const url =
+        deleteTarget.kind === 'chapter'
+          ? `/api/projects/${projectId}/chapters/${deleteTarget.chapter.id}`
+          : `/api/projects/${projectId}/volumes/${deleteTarget.volume.id}`;
+
+      const res = await fetch(url, {
+        method: 'DELETE',
+        headers: { Authorization: `Bearer ${token}` },
+      });
+
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error(
+          data.error ||
+            (deleteTarget.kind === 'chapter'
+              ? 'Could not delete this chapter.'
+              : 'Could not delete this volume.')
+        );
+      }
+
+      const removedChapterIds =
+        deleteTarget.kind === 'chapter'
+          ? [deleteTarget.chapter.id]
+          : chapters.filter((c) => c.volumeId === deleteTarget.volume.id).map((c) => c.id);
+
+      setChapters((prev) => prev.filter((c) => !removedChapterIds.includes(c.id)));
+      if (deleteTarget.kind === 'volume') {
+        setVolumes((prev) => prev.filter((v) => v.id !== deleteTarget.volume.id));
+      }
+
+      setDeleteTarget(null);
+
+      // Leaving the reader on a route whose chapter no longer exists would show
+      // "Chapter draft not found or deleted"; send them somewhere real instead.
+      if (currentChapterId && removedChapterIds.includes(currentChapterId)) {
+        router.replace(`/studio/projects/${projectId}`);
+      }
+    } catch (err) {
+      console.error('Section deletion failed', err);
+      setDeleteError(
+        err instanceof Error ? err.message : 'Could not delete this section.'
+      );
+    } finally {
+      setDeleting(false);
+    }
+  };
+
   if (loading) {
     return (
       <div className="flex-1 flex items-center justify-center">
@@ -170,7 +239,7 @@ export default function ProjectWorkspaceLayout({ children }: { children: React.R
   }
 
   return (
-    <div className="flex-1 flex overflow-hidden">
+    <div className="flex-1 min-h-0 flex overflow-hidden">
       {/* Sidebar Navigator */}
       <aside className="w-72 bg-white dark:bg-slate-900 border-r border-slate-200 dark:border-slate-800 flex flex-col z-20 shrink-0">
         <div className="p-4 border-b border-slate-200 dark:border-slate-800">
@@ -219,13 +288,26 @@ export default function ProjectWorkspaceLayout({ children }: { children: React.R
                       {isExpanded ? <ChevronDown className="w-3.5 h-3.5 text-slate-400" /> : <ChevronRight className="w-3.5 h-3.5 text-slate-400" />}
                       <span className="truncate">{v.title}</span>
                     </button>
-                    <button
-                      onClick={() => handleOpenAddSection(v.id)}
-                      title="Add Section (Prologue, Chapter, Epilogue)"
-                      className="opacity-0 group-hover:opacity-100 p-1 text-slate-400 hover:text-indigo-600 rounded transition-opacity"
-                    >
-                      <FilePlus className="w-3.5 h-3.5" />
-                    </button>
+                    <div className="flex items-center opacity-0 group-hover:opacity-100 transition-opacity">
+                      <button
+                        onClick={() => handleOpenAddSection(v.id)}
+                        title="Add Section (Prologue, Chapter, Epilogue)"
+                        className="p-1 text-slate-400 hover:text-indigo-600 rounded"
+                      >
+                        <FilePlus className="w-3.5 h-3.5" />
+                      </button>
+                      <button
+                        onClick={() => {
+                          setDeleteError(null);
+                          setDeleteTarget({ kind: 'volume', volume: v });
+                        }}
+                        title="Delete Volume and every chapter in it"
+                        aria-label={`Delete volume ${v.title}`}
+                        className="p-1 text-slate-400 hover:text-red-600 rounded"
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
                   </div>
 
                   {isExpanded && (
@@ -238,13 +320,20 @@ export default function ProjectWorkspaceLayout({ children }: { children: React.R
                           const cType = resolveChapterType(chap);
 
                           return (
-                            <Link
+                            <div
                               key={chap.id}
-                              href={`/studio/projects/${projectId}/write/${chap.id}`}
-                              className={`flex items-center gap-2 py-1.5 px-2 rounded text-xs transition-colors ${
+                              className={`group/chapter flex items-center rounded transition-colors ${
                                 isActive
-                                  ? 'bg-indigo-50 dark:bg-indigo-950/60 text-indigo-600 dark:text-indigo-400 font-medium'
-                                  : 'text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800'
+                                  ? 'bg-indigo-50 dark:bg-indigo-950/60'
+                                  : 'hover:bg-slate-100 dark:hover:bg-slate-800'
+                              }`}
+                            >
+                            <Link
+                              href={`/studio/projects/${projectId}/write/${chap.id}`}
+                              className={`flex items-center gap-2 py-1.5 px-2 rounded text-xs transition-colors flex-1 min-w-0 ${
+                                isActive
+                                  ? 'text-indigo-600 dark:text-indigo-400 font-medium'
+                                  : 'text-slate-600 dark:text-slate-400'
                               }`}
                             >
                               {cType === 'prologue' ? (
@@ -260,6 +349,18 @@ export default function ProjectWorkspaceLayout({ children }: { children: React.R
                               )}
                               <span className="truncate">{chap.title}</span>
                             </Link>
+                            <button
+                              onClick={() => {
+                                setDeleteError(null);
+                                setDeleteTarget({ kind: 'chapter', chapter: chap });
+                              }}
+                              title="Delete Chapter"
+                              aria-label={`Delete ${chap.title}`}
+                              className="opacity-0 group-hover/chapter:opacity-100 p-1 mr-1 text-slate-400 hover:text-red-600 rounded transition-opacity shrink-0"
+                            >
+                              <Trash2 className="w-3.5 h-3.5" />
+                            </button>
+                            </div>
                           );
                         })
                       )}
@@ -328,6 +429,31 @@ export default function ProjectWorkspaceLayout({ children }: { children: React.R
           currentChapterId={currentChapterId}
           getIdToken={() => user.getIdToken()}
           onClose={() => setExportOpen(false)}
+        />
+      )}
+
+      {deleteTarget && (
+        <DeleteSectionDialog
+          kind={deleteTarget.kind}
+          title={
+            deleteTarget.kind === 'chapter'
+              ? deleteTarget.chapter.title
+              : deleteTarget.volume.title
+          }
+          chapterTitles={
+            deleteTarget.kind === 'volume'
+              ? chapters
+                  .filter((c) => c.volumeId === deleteTarget.volume.id)
+                  .map((c) => c.title)
+              : undefined
+          }
+          busy={deleting}
+          error={deleteError}
+          onConfirm={handleConfirmDelete}
+          onClose={() => {
+            setDeleteTarget(null);
+            setDeleteError(null);
+          }}
         />
       )}
 
@@ -402,7 +528,7 @@ export default function ProjectWorkspaceLayout({ children }: { children: React.R
       )}
 
       {/* Main Content Pane */}
-      <main className="flex-1 flex flex-col overflow-hidden bg-slate-100 dark:bg-slate-950">
+      <main className="flex-1 min-w-0 min-h-0 flex flex-col overflow-hidden bg-slate-100 dark:bg-slate-950">
         {children}
       </main>
     </div>

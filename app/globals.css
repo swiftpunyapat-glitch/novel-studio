@@ -2,7 +2,14 @@
 @tailwind components;
 @tailwind utilities;
 
-@import url('https://fonts.googleapis.com/css2?family=Sarabun:ital,wght@0,300;0,400;0,500;0,600;0,700;1,400;1,600&display=swap');
+/*
+   Sarabun is the UI face and the display stand-in for TH Sarabun New, which is
+   a desktop font and rarely installed outside Thailand. Prompt is a manuscript
+   font in its own right. Angsana New ships with Windows and Office, so there is
+   nothing to load for it. What a browser substitutes here never changes what
+   DOCX export writes — see lib/editor/fonts.ts.
+*/
+@import url('https://fonts.googleapis.com/css2?family=Sarabun:ital,wght@0,300;0,400;0,500;0,600;0,700;1,400;1,600&family=Prompt:ital,wght@0,300;0,400;0,500;0,600;0,700;1,400;1,600&display=swap');
 
 :root {
   --background: #f8fafc;
@@ -32,7 +39,21 @@ body {
 .novel-canvas-wrapper {
   display: flex;
   justify-content: center;
+  /*
+     The paper must size to the manuscript, not to the viewport.
+
+     Default `align-items: stretch` gave the canvas the scroll pane's height
+     (clamped up to its own min-height), so on a chapter longer than one screen
+     the white sheet stopped and the remaining prose sat on the studio
+     background. It also breaks Page View outright, where the painted sheets
+     have to run the whole length of the document.
+  */
+  align-items: flex-start;
   padding: 2.5rem 1rem;
+  /* The manuscript is the only thing that scrolls here; the toolbar above is a
+     sibling and stays put. Anchoring keeps the caret steady when the paginator
+     inserts or removes a page spacer above the viewport. */
+  overflow-anchor: auto;
 }
 
 /* A5 Proportion Dimensions: 148mm x 210mm (Ratio 1 : 1.414) */
@@ -117,4 +138,125 @@ body {
   letter-spacing: 0.15em;
   color: #94a3b8;
   text-transform: uppercase;
+}
+
+/* ---------------------------------------------------------------------------
+   Semantic Scene Header (Stage 4C)
+
+   Renders `{ timeText, locationText }` as one understated line beneath its
+   scene break. It is a node, not decorative prose, so it never inherits the
+   body paragraph's first-line indent.
+--------------------------------------------------------------------------- */
+.novel-scene-header {
+  text-align: center;
+  text-indent: 0 !important;
+  margin: -12px 0 24px;
+  font-style: italic;
+  font-size: 0.9em;
+  color: #64748b;
+  user-select: none;
+}
+
+.dark .novel-scene-header {
+  color: #94a3b8;
+}
+
+.novel-scene-header .scene-header-sep {
+  opacity: 0.6;
+}
+
+/* ---------------------------------------------------------------------------
+   EDITOR DISPLAY SPACING (Stage 4D)
+
+   Presentation only. This changes how the manuscript LOOKS on this screen and
+   never what it IS: no attribute is written, no save is triggered, and DOCX,
+   publishing and the reader are untouched. Manuscript line spacing is commonly
+   1.08, which is right on paper and tiring on screen for long Thai prose, where
+   tone marks and vowels stack above and below the baseline.
+
+   `!important` is deliberate and is the reason this rule is confined to
+   `.novel-display-spacing`: a paragraph the author gave an explicit line
+   spacing carries it as an inline style, and comfortable display mode has to
+   win over it too, or the page would read at two different rhythms. The class
+   is never applied in Page View or in Manuscript Exact mode, where those inline
+   values must be exactly what is shown.
+--------------------------------------------------------------------------- */
+.novel-display-spacing .ProseMirror,
+.novel-display-spacing .ProseMirror p {
+  line-height: var(--novel-display-line-spacing, 1.4) !important;
+}
+
+/* ---------------------------------------------------------------------------
+   PAGE VIEW (Stage 4G)
+
+   The sheets are painted, not built: one repeating gradient draws an A5 page
+   followed by a gap, forever. What makes that work is the paginator, which
+   inserts blank spacers so every page occupies exactly one period — see
+   lib/editor/pagination.ts. Nothing here, and nothing there, changes the
+   manuscript.
+--------------------------------------------------------------------------- */
+.novel-view-page .novel-canvas-a5 {
+  width: var(--novel-page-width, 148mm);
+  max-width: none;
+  min-height: var(--novel-page-height, 210mm);
+  border-radius: 0;
+  box-shadow: none;
+  background-color: transparent;
+  padding: var(--novel-margin-top, 20mm) var(--novel-margin-right, 20mm)
+    var(--novel-margin-bottom, 20mm) var(--novel-margin-left, 20mm);
+
+  /* Sheet, then gap, repeating. The gap is transparent so the studio
+     background shows through and reads as space between two pieces of paper. */
+  background-image: repeating-linear-gradient(
+    to bottom,
+    var(--paper-bg) 0,
+    var(--paper-bg) calc(var(--novel-page-height, 210mm) - 1px),
+    rgba(100, 116, 139, 0.35) calc(var(--novel-page-height, 210mm) - 1px),
+    rgba(100, 116, 139, 0.35) var(--novel-page-height, 210mm),
+    transparent var(--novel-page-height, 210mm),
+    transparent calc(var(--novel-page-height, 210mm) + var(--novel-page-gap, 28px))
+  );
+  background-origin: border-box;
+  background-clip: border-box;
+  filter: drop-shadow(0 2px 6px rgba(0, 0, 0, 0.12));
+}
+
+/*
+   The paper element is the coordinate space Page View measures in: block
+   offsets are read from its padding edge, and the paginator subtracts one top
+   margin to reach the line where page 1's text begins. Pinning it as the offset
+   parent keeps that reading independent of which ancestor happens to be
+   positioned.
+*/
+.novel-page-flow {
+  position: relative;
+}
+
+/* Blank space that finishes a page. Injected as a ProseMirror widget
+   decoration, so it exists only in the view, never in the document. */
+.novel-page-spacer {
+  display: block;
+  width: 100%;
+  user-select: none;
+  pointer-events: none;
+}
+
+/* An explicit page break in Page View stretches to the bottom of its sheet, so
+   the next block visibly starts on the next page. */
+.novel-view-page .novel-page-break--paged {
+  margin: 0;
+  border-top: none;
+  align-items: flex-start;
+  box-sizing: border-box;
+}
+
+.novel-view-page .novel-page-break--paged .page-break-label {
+  top: 4px;
+  background-color: transparent;
+}
+
+/* Page View is manuscript-exact, so the comfortable display metrics that make
+   Writing View readable must not follow it here. */
+.novel-view-page .ProseMirror {
+  line-height: var(--novel-line-spacing, 1.08);
 }

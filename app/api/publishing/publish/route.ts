@@ -7,6 +7,7 @@ import {
 } from '@/lib/server/auth';
 import { renderTiptapToSafeHtml, renderTiptapToPlainText } from '@/lib/publishing/render';
 import { makeSlug, slugCandidates } from '@/lib/publishing/slug';
+import { DEFAULT_DOCUMENT_SETTINGS } from '@/types/project';
 
 /**
  * Publishes a frozen revision snapshot to the public reader.
@@ -161,7 +162,8 @@ export async function POST(req: Request) {
         publishedAt: firstPublishedAt,
         lastRepublishedAt: now,
         readingSettings: {
-          bodyFont: projectData.documentSettings?.bodyFont ?? 'Sarabun',
+          bodyFont:
+            projectData.documentSettings?.bodyFont ?? DEFAULT_DOCUMENT_SETTINGS.bodyFont,
           firstLineIndentCm: projectData.documentSettings?.firstLineIndentCm ?? 0.5,
           sceneBreakSymbol: projectData.documentSettings?.sceneBreakSymbol ?? '***',
         },

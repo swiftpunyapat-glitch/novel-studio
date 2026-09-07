@@ -73,7 +73,9 @@ describe('Effective paragraph formatting', () => {
 describe('Effective run formatting', () => {
   test('no marks inherits project font and size', () => {
     const f = resolveRunFormat([], base);
-    expect(f.fontFamily).toBe('Sarabun');
+    // Read from the settings rather than hardcoded, so changing the default
+    // font is a one-line change and not a test rewrite.
+    expect(f.fontFamily).toBe(DEFAULT_DOCUMENT_SETTINGS.bodyFont);
     expect(f.fontSizePt).toBe(16);
     expect(f.bold).toBe(false);
   });
@@ -134,11 +136,13 @@ describe('Inheritance regression — project default changes', () => {
     expect(resolveParagraphFormat(B.attrs, changed).lineSpacingMultiplier).toBe(1.5);
   });
 
-  test('font family: Sarabun -> Georgia moves A, leaves B at Tahoma', () => {
+  test('font family: project default -> Georgia moves A, leaves B at Tahoma', () => {
     const A: Array<{ type: string; attrs?: Record<string, unknown> }> = [];
+    // Tahoma is no longer offered in the picker. A manuscript that already
+    // carries it must keep it — narrowing the catalogue is not a migration.
     const B = [{ type: 'textStyle', attrs: { fontFamily: 'Tahoma' } }];
 
-    expect(resolveRunFormat(A, base).fontFamily).toBe('Sarabun');
+    expect(resolveRunFormat(A, base).fontFamily).toBe(DEFAULT_DOCUMENT_SETTINGS.bodyFont);
     const changed: DocumentSettings = { ...base, bodyFont: 'Georgia' };
     expect(resolveRunFormat(A, changed).fontFamily).toBe('Georgia');
     expect(resolveRunFormat(B, changed).fontFamily).toBe('Tahoma');

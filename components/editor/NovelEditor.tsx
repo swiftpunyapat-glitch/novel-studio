@@ -1,11 +1,18 @@
 'use client';
 
-import React, { useEffect, useState, useRef, useCallback, useImperativeHandle, forwardRef } from 'react';
+import React, {
+  useEffect,
+  useState,
+  useRef,
+  useMemo,
+  useCallback,
+  useImperativeHandle,
+  forwardRef,
+} from 'react';
 import { useEditor, EditorContent, type Editor } from '@tiptap/react';
 import StarterKit from '@tiptap/starter-kit';
 import Underline from '@tiptap/extension-underline';
 import TextStyle from '@tiptap/extension-text-style';
-import FontFamily from '@tiptap/extension-font-family';
 
 import { Chapter, DraftVariant, DocumentSettings, readContentVersion } from '@/types/project';
 import {
@@ -27,20 +34,49 @@ import {
 } from '@/lib/offline/manuscript-mirror';
 
 import { SceneBreakExtension } from '@/lib/editor/extensions/SceneBreakExtension';
+import { SceneHeaderExtension } from '@/lib/editor/extensions/SceneHeaderExtension';
 import { PageBreakExtension } from '@/lib/editor/extensions/PageBreakExtension';
 import { ManuscriptParagraph } from '@/lib/editor/extensions/ManuscriptParagraph';
+import { ManuscriptFontFamily } from '@/lib/editor/extensions/ManuscriptFontFamily';
+import { ManuscriptSelectAll } from '@/lib/editor/extensions/ManuscriptSelectAll';
 import { ParagraphFormatExtension } from '@/lib/editor/extensions/ParagraphFormatExtension';
 import { FontSizeExtension } from '@/lib/editor/extensions/FontSizeExtension';
+import {
+  PageViewExtension,
+  setPageViewConfig,
+} from '@/lib/editor/extensions/PageViewExtension';
 import { STARTER_KIT_OPTIONS } from '@/lib/editor/manuscript-schema';
-import { documentSettingsToCssVars } from '@/lib/format/effective';
+import {
+  documentSettingsToCssVars,
+  pageContentHeightPx,
+  PX_PER_MM,
+} from '@/lib/format/effective';
+import { PAGE_VIEW_GAP_PX } from '@/lib/editor/pagination';
 import { normalizeManuscriptDoc } from '@/lib/format/normalize';
 import type { ParagraphOverrides } from '@/lib/format/effective';
+import type { SceneHeaderAttrs } from '@/lib/editor/scene-header';
+import {
+  decideSelectAll,
+  isNativeTextField,
+  isSelectAllChord,
+} from '@/lib/editor/select-all';
+import {
+  loadDisplaySpacing,
+  loadViewMode,
+  resolveDisplayLineSpacing,
+  saveDisplaySpacing,
+  saveViewMode,
+  usesDisplaySpacing,
+  type DisplaySpacingMode,
+  type EditorViewMode,
+} from '@/lib/editor/display-preferences';
 
 import { FormattingToolbar } from './FormattingToolbar';
 import { ChapterMetadataHeader } from './ChapterMetadataHeader';
 import { ConflictDialog } from './ConflictDialog';
 import { RecoveryDialog } from './RecoveryDialog';
 import { ParagraphSettingsDialog } from './ParagraphSettingsDialog';
+import { SceneBreakDialog } from './SceneBreakDialog';
 
 /** Imperative surface the page uses so Checkpoint reads LIVE editor state. */
 export interface NovelEditorHandle {
@@ -83,6 +119,15 @@ export const NovelEditor = forwardRef<NovelEditorHandle, NovelEditorProps>(funct
   const [recovery, setRecovery] = useState<MirrorSnapshot | null>(null);
   const [busy, setBusy] = useState(false);
   const [paragraphDialogOpen, setParagraphDialogOpen] = useState(false);
+  const [sceneDialog, setSceneDialog] = useState<{
+    mode: 'insert' | 'edit';
+    initial: Partial<SceneHeaderAttrs> | null;
+  } | null>(null);
+
+  // Presentation state. Deliberately NOT part of the manuscript or of the
+  // project's documentSettings — see lib/editor/display-preferences.ts.
+  const [viewMode, setViewMode] = useState<EditorViewMode>('scroll');
+  const [displaySpacing, setDisplaySpacing] = useState<DisplaySpacingMode>('comfortable');
 
   const sessionIdRef = useRef<string>(
     typeof crypto !== 'undefined' && crypto.randomUUID
@@ -104,11 +149,16 @@ export const NovelEditor = forwardRef<NovelEditorHandle, NovelEditorProps>(funct
       ManuscriptParagraph,
       Underline,
       TextStyle,
-      FontFamily.configure({ types: ['textStyle'] }),
+      ManuscriptFontFamily.configure({ types: ['textStyle'] }),
       FontSizeExtension,
       SceneBreakExtension,
+      SceneHeaderExtension,
       PageBreakExtension,
       ParagraphFormatExtension,
+      // Ctrl/Cmd+A stays inside the manuscript. (Stage 4B)
+      ManuscriptSelectAll,
+      // Presentation-only pagination; dormant until Page View is on. (Stage 4G)
+      PageViewExtension,
     ],
     // Legacy baked defaults are converted to the tri-state override model
     // exactly once, at load. (Stage 3B)
@@ -191,6 +241,50 @@ export const NovelEditor = forwardRef<NovelEditorHandle, NovelEditorProps>(funct
     };
   }, [projectId, chapter.id, variant.id]);
 
+  // ---- Display preferences (presentation only, per browser) ------------------
+  // Read after mount so server and client render the same first paint.
+  useEffect(() => {
+    setViewMode(loadViewMode());
+    setDisplaySpacing(loadDisplaySpacing());
+  }, []);
+
+  const handleViewModeChange = useCallback((mode: EditorViewMode) => {
+    setViewMode(mode);
+    saveViewMode(mode);
+  }, []);
+
+  const handleDisplaySpacingChange = useCallback((mode: DisplaySpacingMode) => {
+    setDisplaySpacing(mode);
+    saveDisplaySpacing(mode);
+  }, []);
+
+  /**
+   * Page geometry for the paginator, in the editor's own content coordinates.
+   *
+   * A page's usable height is the A5 sheet minus its margins. The "gap" between
+   * two pages is therefore the bottom margin of the page that ended, the
+   * visible space between the sheets, and the top margin of the page that
+   * starts — which is exactly the distance from the last line of one page to
+   * the first line of the next.
+   */
+  const pageMetrics = useMemo(
+    () => ({
+      pageHeightPx: pageContentHeightPx(documentSettings),
+      pageGapPx:
+        (documentSettings.margins.bottomMm + documentSettings.margins.topMm) * PX_PER_MM +
+        PAGE_VIEW_GAP_PX,
+    }),
+    [documentSettings]
+  );
+
+  useEffect(() => {
+    setPageViewConfig(editor?.view, {
+      enabled: viewMode === 'page',
+      pageHeightPx: pageMetrics.pageHeightPx,
+      pageGapPx: pageMetrics.pageGapPx,
+    });
+  }, [editor, viewMode, pageMetrics]);
+
   // ---- Ctrl+S ----------------------------------------------------------------
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -254,6 +348,71 @@ export const NovelEditor = forwardRef<NovelEditorHandle, NovelEditorProps>(funct
 
   const handleManualSave = useCallback(async () => {
     await coordinatorRef.current?.saveNow();
+  }, []);
+
+  // ---- Scene break / scene header (Stage 4C) ---------------------------------
+  const handleOpenSceneBreak = useCallback(() => {
+    const ed = editorRef.current;
+    if (!ed) return;
+
+    // Pressing Scene while a scene header is selected edits that header rather
+    // than stacking a second break on top of it.
+    if (ed.isActive('sceneHeader')) {
+      setSceneDialog({
+        mode: 'edit',
+        initial: ed.getAttributes('sceneHeader') as Partial<SceneHeaderAttrs>,
+      });
+      return;
+    }
+    setSceneDialog({ mode: 'insert', initial: null });
+  }, []);
+
+  const handleSceneDialogSubmit = useCallback(
+    (header: Partial<SceneHeaderAttrs> | null) => {
+      const ed = editorRef.current;
+      const dialog = sceneDialog;
+      setSceneDialog(null);
+      if (!ed || !dialog) return;
+
+      if (dialog.mode === 'edit') {
+        if (header) {
+          ed.chain().focus().updateSceneHeader(header).run();
+        } else {
+          // Clearing both fields removes the header; the scene break stays.
+          ed.chain().focus().deleteNode('sceneHeader').run();
+        }
+        return;
+      }
+
+      ed.chain().focus().insertSceneBreakWithHeader(header).run();
+    },
+    [sceneDialog]
+  );
+
+  /**
+   * Ctrl/Cmd+A inside the writing pane, but outside the editor itself.
+   *
+   * Scoped to this region rather than to `document`, so the sidebar, dialogs
+   * and every other part of the application keep native behaviour. A genuine
+   * text field inside the region — the chapter title, a metadata input — also
+   * keeps native behaviour; only "focus is on the paper, not in a field" is
+   * redirected to the manuscript.
+   */
+  const handleRegionKeyDown = useCallback((event: React.KeyboardEvent<HTMLDivElement>) => {
+    const ed = editorRef.current;
+    if (!ed) return;
+
+    const target = event.target as HTMLElement | null;
+    const decision = decideSelectAll({
+      chord: isSelectAllChord(event),
+      targetIsNativeTextField: isNativeTextField(target),
+      targetIsInsideManuscript: !!target && ed.view.dom.contains(target),
+    });
+
+    if (decision !== 'select-manuscript') return;
+
+    event.preventDefault();
+    ed.chain().focus().selectAll().run();
   }, []);
 
   // ---- Conflict resolution ---------------------------------------------------
@@ -339,6 +498,29 @@ export const NovelEditor = forwardRef<NovelEditorHandle, NovelEditorProps>(funct
     }
   }, [recovery, projectId, chapter.id, variant]);
 
+  const canvasVars = {
+    ...documentSettingsToCssVars(documentSettings),
+    // Presentation-only line height. Applied by a CSS rule that is active only
+    // while `novel-display-spacing` is on the wrapper, which never happens in
+    // Page View. The manuscript's own value is untouched either way.
+    '--novel-display-line-spacing': String(
+      resolveDisplayLineSpacing(
+        displaySpacing,
+        viewMode,
+        documentSettings.lineSpacingMultiplier
+      )
+    ),
+    '--novel-page-gap': `${PAGE_VIEW_GAP_PX}px`,
+  } as React.CSSProperties;
+
+  const wrapperClasses = [
+    'flex-1 overflow-y-auto novel-canvas-wrapper focus:outline-none',
+    viewMode === 'page' ? 'novel-view-page' : 'novel-view-scroll',
+    usesDisplaySpacing(displaySpacing, viewMode) ? 'novel-display-spacing' : '',
+  ]
+    .filter(Boolean)
+    .join(' ');
+
   return (
     <div className="flex-1 flex flex-col overflow-hidden">
       <FormattingToolbar
@@ -347,20 +529,31 @@ export const NovelEditor = forwardRef<NovelEditorHandle, NovelEditorProps>(funct
         wordCount={wordCount}
         settings={documentSettings}
         onOpenParagraphSettings={() => setParagraphDialogOpen(true)}
+        onOpenSceneBreak={handleOpenSceneBreak}
         onSave={handleManualSave}
+        viewMode={viewMode}
+        onViewModeChange={handleViewModeChange}
+        displaySpacing={displaySpacing}
+        onDisplaySpacingChange={handleDisplaySpacingChange}
       />
 
-      <div className="flex-1 overflow-y-auto novel-canvas-wrapper">
+      {/*
+        tabIndex makes the paper itself focusable, which is what lets a click on
+        the margin route Ctrl+A to the manuscript instead of the whole page.
+        The handler is scoped here rather than on `document`. (Stage 4B)
+      */}
+      <div className={wrapperClasses} tabIndex={-1} onKeyDown={handleRegionKeyDown}>
         {/*
           Project defaults are published as CSS variables here, so a paragraph
           that inherits reflects a settings change immediately, while a
           paragraph with explicit overrides keeps its own inline values.
           (Stage 3C)
+
+          In Page View the same element becomes the sheet stack: its background
+          paints the A5 pages, and the spacers the paginator injects keep every
+          page exactly one sheet tall. (Stage 4G)
         */}
-        <div
-          className="novel-canvas-a5"
-          style={documentSettingsToCssVars(documentSettings) as React.CSSProperties}
-        >
+        <div className="novel-canvas-a5 novel-page-flow" style={canvasVars}>
           <ChapterMetadataHeader chapter={chapter} projectId={projectId} />
           <EditorContent editor={editor} />
         </div>
@@ -376,6 +569,16 @@ export const NovelEditor = forwardRef<NovelEditorHandle, NovelEditorProps>(funct
           onRestoreLocal={handleRestoreLocal}
           onUseRemote={handleUseRemote}
           onPreserveAsVariant={handlePreserveRecoveryAsVariant}
+        />
+      )}
+
+      {sceneDialog && (
+        <SceneBreakDialog
+          mode={sceneDialog.mode}
+          initial={sceneDialog.initial}
+          sceneBreakSymbol={documentSettings.sceneBreakSymbol}
+          onSubmit={handleSceneDialogSubmit}
+          onClose={() => setSceneDialog(null)}
         />
       )}
 

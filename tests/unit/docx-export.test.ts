@@ -90,12 +90,24 @@ describe('Page setup', () => {
 });
 
 describe('Document defaults', () => {
-  test('Sarabun is the base font on every script slot, including complex script', async () => {
+  test('the project font is the base font on every script slot, including complex script', async () => {
     const { styles } = await xmlOf([chapter([para('x')])]);
-    expect(styles).toMatch(/w:ascii="Sarabun"/);
-    expect(styles).toMatch(/w:hAnsi="Sarabun"/);
+    const font = DEFAULT_DOCUMENT_SETTINGS.bodyFont;
+    expect(font).toBe('TH Sarabun New');
+    expect(styles).toMatch(new RegExp(`w:ascii="${font}"`));
+    expect(styles).toMatch(new RegExp(`w:hAnsi="${font}"`));
     // w:cs is what Word uses to render Thai; without it Thai falls back.
-    expect(styles).toMatch(/w:cs="Sarabun"/);
+    expect(styles).toMatch(new RegExp(`w:cs="${font}"`));
+  });
+
+  test('a stored CSS stack is reduced to the Word font name it names', async () => {
+    // Legacy data could hold "TH Sarabun New, sans-serif". Word resolves the
+    // whole string as one family, finds nothing, and substitutes silently.
+    const legacy = { ...settings, bodyFont: "'TH Sarabun New', sans-serif" };
+    const { styles, document } = await xmlOf([chapter([para('x')])], legacy);
+    expect(styles).toMatch(/w:ascii="TH Sarabun New"/);
+    expect(styles).not.toMatch(/sans-serif/);
+    expect(document).not.toMatch(/sans-serif/);
   });
 
   test('16pt default is emitted as 32 half-points, with complex-script size', async () => {
@@ -168,8 +180,32 @@ describe('Run formatting', () => {
 
   test('a run with no overrides still gets the project font and size explicitly', async () => {
     const { document } = await xmlOf([chapter([para('plain')])]);
-    expect(document).toMatch(/w:ascii="Sarabun"/);
+    expect(document).toMatch(
+      new RegExp(`w:ascii="${DEFAULT_DOCUMENT_SETTINGS.bodyFont}"`)
+    );
     expect(document).toMatch(/<w:sz w:val="32"\s*\/>/);
+  });
+
+  test.each(['Prompt', 'TH Sarabun New', 'Angsana New'])(
+    '%s exports as a real Word font family name',
+    async (font) => {
+      const { document } = await xmlOf([
+        chapter([para('x', {}, [{ type: 'textStyle', attrs: { fontFamily: font } }])]),
+      ]);
+      expect(document).toMatch(new RegExp(`w:ascii="${font}"`));
+      // Complex script is the slot Word uses for Thai.
+      expect(document).toMatch(new RegExp(`w:cs="${font}"`));
+    }
+  );
+
+  test('16 pt is 32 half-points, in the document body as well as the styles', async () => {
+    // OOXML measures font size in half-points, so a 16 pt manuscript must
+    // write 32 — not 16, which Word would render as 8 pt.
+    expect(ptToHalfPoints(16)).toBe(32);
+    const { document, styles } = await xmlOf([chapter([para('plain')])]);
+    expect(styles).toMatch(/<w:sz w:val="32"\s*\/>/);
+    expect(document).toMatch(/<w:sz w:val="32"\s*\/>/);
+    expect(document).toMatch(/<w:szCs w:val="32"\s*\/>/);
   });
 });
 
@@ -237,6 +273,50 @@ describe('Semantic breaks', () => {
     ]);
     expect(document).toContain('***');
     expect(document).toMatch(/NovelSceneBreak/);
+  });
+
+  test('scene header exports its time and location through a named style', async () => {
+    const { document, styles } = await xmlOf([
+      chapter([
+        para('a'),
+        { type: 'sceneBreak' },
+        { type: 'sceneHeader', attrs: { timeText: '18:30', locationText: 'ลาดพร้าว 101' } },
+        para('b'),
+      ]),
+    ]);
+    expect(styles).toContain('NovelSceneHeader');
+    expect(document).toContain('NovelSceneHeader');
+    expect(document).toContain('18:30 — ลาดพร้าว 101');
+  });
+
+  test.each([
+    [{ timeText: '18:30', locationText: null }, '18:30'],
+    [{ timeText: null, locationText: 'Bangkok' }, 'Bangkok'],
+  ])('a scene header with only one field exports just that field', async (attrs, expected) => {
+    const { document } = await xmlOf([
+      chapter([{ type: 'sceneBreak' }, { type: 'sceneHeader', attrs }]),
+    ]);
+    // Scoped to the scene header paragraph: the chapter metadata line above it
+    // legitimately contains the same separator.
+    const headerParagraph = /<w:p><w:pPr><w:pStyle w:val="NovelSceneHeader"\/>[\s\S]*?<\/w:p>/.exec(
+      document
+    );
+    expect(headerParagraph).not.toBeNull();
+    expect(headerParagraph![0]).toContain(expected);
+    expect(headerParagraph![0]).not.toContain(' — ');
+  });
+
+  test('an empty scene header emits no paragraph at all', async () => {
+    const { document } = await xmlOf([
+      chapter([{ type: 'sceneBreak' }, { type: 'sceneHeader', attrs: {} }]),
+    ]);
+    expect(document).not.toContain('NovelSceneHeader');
+  });
+
+  test('a document with only a scene break still exports (backward compatible)', async () => {
+    const { document } = await xmlOf([chapter([para('a'), { type: 'sceneBreak' }, para('b')])]);
+    expect(document).toContain('***');
+    expect(document).not.toContain('NovelSceneHeader');
   });
 
   test('a custom scene break symbol is used', async () => {

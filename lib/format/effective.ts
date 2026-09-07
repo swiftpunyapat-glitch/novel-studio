@@ -21,6 +21,7 @@
  */
 
 import type { DocumentSettings } from '@/types/project';
+import { canonicalFontName, fontCssStack } from '@/lib/editor/fonts';
 
 export type Alignment = 'left' | 'center' | 'right' | 'justify';
 
@@ -145,8 +146,10 @@ export function readRunOverrides(
 
   for (const mark of list) {
     if (mark?.type !== 'textStyle') continue;
-    const family = mark.attrs?.fontFamily;
-    if (typeof family === 'string' && family.trim()) fontFamily = family.trim();
+    // Reduced to a single family name: a legacy run may carry a whole CSS
+    // stack, which Word would look up verbatim and then silently substitute.
+    const family = canonicalFontName(mark.attrs?.fontFamily as string | undefined);
+    if (family) fontFamily = family;
     const size = num(mark.attrs?.fontSizePt);
     if (size !== null && size > 0) fontSizePt = size;
   }
@@ -171,7 +174,7 @@ export function resolveRunFormat(
   const o = readRunOverrides(marks);
 
   return {
-    fontFamily: o.fontFamily ?? settings.bodyFont,
+    fontFamily: o.fontFamily ?? canonicalFontName(settings.bodyFont) ?? settings.bodyFont,
     fontSizePt: o.fontSizePt ?? settings.bodyFontSizePt,
     bold: o.bold,
     italic: o.italic,
@@ -226,7 +229,9 @@ export function documentSettingsToCssVars(
   settings: DocumentSettings
 ): Record<string, string> {
   return {
-    '--novel-font-family': `'${settings.bodyFont}', 'Sarabun', 'Leelawadee UI', sans-serif`,
+    // A display stack, not the stored name: the stored name is canonical
+    // ("TH Sarabun New") and may not be installed on the writing machine.
+    '--novel-font-family': fontCssStack(settings.bodyFont),
     '--novel-font-size': `${settings.bodyFontSizePt}pt`,
     '--novel-line-spacing': String(settings.lineSpacingMultiplier),
     '--novel-first-line-indent': `${settings.firstLineIndentCm}cm`,
@@ -235,7 +240,42 @@ export function documentSettingsToCssVars(
     '--novel-left-indent': '0cm',
     '--novel-right-indent': '0cm',
     '--novel-text-align': settings.paragraphAlignment,
+
+    // Page geometry, read only by Page View. (Stage 4G)
+    '--novel-page-width': `${A5_WIDTH_MM}mm`,
+    '--novel-page-height': `${A5_HEIGHT_MM}mm`,
+    '--novel-margin-top': `${settings.margins.topMm}mm`,
+    '--novel-margin-bottom': `${settings.margins.bottomMm}mm`,
+    '--novel-margin-left': `${settings.margins.leftMm}mm`,
+    '--novel-margin-right': `${settings.margins.rightMm}mm`,
   };
+}
+
+// ---------------------------------------------------------------------------
+// Page geometry (Stage 4G)
+//
+// Presentation only. Nothing here is ever written to a manuscript; it exists so
+// Page View can draw sheets at the same physical size the DOCX exporter writes.
+// ---------------------------------------------------------------------------
+
+/** A5, matching the DOCX section defaults in lib/docx/generator.ts. */
+export const A5_WIDTH_MM = 148;
+export const A5_HEIGHT_MM = 210;
+
+/**
+ * CSS defines 1mm as exactly 96/25.4 reference pixels, independent of the
+ * physical display, so this conversion matches what the browser lays out.
+ */
+export const PX_PER_MM = 96 / 25.4;
+
+/** Usable height of one A5 page in CSS pixels, margins removed. */
+export function pageContentHeightPx(settings: DocumentSettings): number {
+  return (A5_HEIGHT_MM - settings.margins.topMm - settings.margins.bottomMm) * PX_PER_MM;
+}
+
+/** Usable width of one A5 page in CSS pixels, margins removed. */
+export function pageContentWidthPx(settings: DocumentSettings): number {
+  return (A5_WIDTH_MM - settings.margins.leftMm - settings.margins.rightMm) * PX_PER_MM;
 }
 
 /**
