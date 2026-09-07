@@ -11,9 +11,12 @@ import {
   planRequest,
 } from '../../mcp/lib/tools.mjs';
 import {
+  JSON_RPC_ERRORS,
   PREFERRED_PROTOCOL_VERSION,
   SUPPORTED_PROTOCOL_VERSIONS,
   createHandler,
+  isNotification,
+  isValidRequestId,
   negotiateProtocolVersion,
   splitMessages,
 } from '../../mcp/lib/protocol.mjs';
@@ -104,6 +107,27 @@ describe('the MCP surface cannot write', () => {
     for (const tool of TOOLS) {
       expect(tool.description.toLowerCase()).toContain('read-only');
     }
+  });
+
+  test('every tool carries the read-only MCP annotations', () => {
+    for (const tool of TOOLS) {
+      expect(tool.annotations).toEqual({
+        readOnlyHint: true,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: false,
+      });
+    }
+  });
+
+  test('annotations are advisory; the structural guard is what actually holds', () => {
+    // Stated as a test so the distinction survives: a client is entitled to
+    // ignore an untrusted server's hints, and this server does not rely on
+    // them for its read-only property.
+    const tampered = { ...TOOLS[0], annotations: { readOnlyHint: false } };
+    expect(tampered.annotations.readOnlyHint).toBe(false);
+    expect(() => assertReadOnly({ method: 'POST', path: '/api/ai/projects' })).toThrow();
+    expect(planRequest('novel_list_projects', {}).method).toBe('GET');
   });
 });
 
@@ -270,7 +294,52 @@ describe('MCP protocol handling', () => {
   test('an unknown protocol version falls back to ours rather than failing', () => {
     expect(negotiateProtocolVersion('1999-01-01')).toBe(PREFERRED_PROTOCOL_VERSION);
     expect(negotiateProtocolVersion(undefined)).toBe(PREFERRED_PROTOCOL_VERSION);
+    expect(negotiateProtocolVersion(42)).toBe(PREFERRED_PROTOCOL_VERSION);
     expect(SUPPORTED_PROTOCOL_VERSIONS).toContain(PREFERRED_PROTOCOL_VERSION);
+  });
+
+  test('supports the 2025-era revisions, newest preferred', () => {
+    expect(SUPPORTED_PROTOCOL_VERSIONS).toEqual([
+      '2025-11-25',
+      '2025-06-18',
+      '2025-03-26',
+      '2024-11-05',
+    ]);
+    expect(PREFERRED_PROTOCOL_VERSION).toBe('2025-11-25');
+  });
+
+  test('every supported version is echoed back when a client asks for it', async () => {
+    for (const version of SUPPORTED_PROTOCOL_VERSIONS) {
+      const res = await call({
+        jsonrpc: '2.0',
+        id: 1,
+        method: 'initialize',
+        params: { protocolVersion: version },
+      });
+      expect(res.result.protocolVersion).toBe(version);
+    }
+  });
+
+  test('does NOT claim the modern 2026-07-28 era', async () => {
+    // That revision brings server/discover and per-request metadata, none of
+    // which this server implements. Advertising it would send a client looking
+    // for a discovery method that answers -32601.
+    expect(SUPPORTED_PROTOCOL_VERSIONS).not.toContain('2026-07-28');
+    expect(negotiateProtocolVersion('2026-07-28')).toBe(PREFERRED_PROTOCOL_VERSION);
+
+    const res = await call({
+      jsonrpc: '2.0',
+      id: 1,
+      method: 'initialize',
+      params: { protocolVersion: '2026-07-28' },
+    });
+    expect(res.result.protocolVersion).toBe('2025-11-25');
+  });
+
+  test('no advertised version is from a later era than 2025', () => {
+    for (const version of SUPPORTED_PROTOCOL_VERSIONS) {
+      expect(version < '2026-01-01').toBe(true);
+    }
   });
 
   test('initialize instructions state the read-only limit', async () => {
@@ -326,6 +395,189 @@ describe('MCP protocol handling', () => {
     });
     expect(res.result.isError).toBe(false);
     expect(res.result.content[0].text).toBe('called novel_list_projects');
+  });
+});
+
+// ===========================================================================
+// JSON-RPC validity
+// ===========================================================================
+
+describe('JSON-RPC request validation', () => {
+  const handle = createHandler({
+    serverInfo: { name: 'novel-studio', version: '1.0.0' },
+    tools: TOOLS,
+    callTool: async () => [{ type: 'text' as const, text: 'ok' }],
+  });
+
+  const send = (message: unknown) => handle(message as never);
+
+  describe('what counts as a notification', () => {
+    test('a notification has NO id property — not an id of null', () => {
+      expect(isNotification({ jsonrpc: '2.0', method: 'ping' })).toBe(true);
+      expect(isNotification({ jsonrpc: '2.0', method: 'ping', id: null })).toBe(false);
+      expect(isNotification({ jsonrpc: '2.0', method: 'ping', id: 1 })).toBe(false);
+      // Present but explicitly undefined is still a property, so still a request.
+      expect(isNotification({ jsonrpc: '2.0', method: 'ping', id: undefined })).toBe(false);
+    });
+
+    test.each([
+      'initialize',
+      'ping',
+      'tools/list',
+      'tools/call',
+      'notifications/initialized',
+      'notifications/cancelled',
+      'resources/list',
+      'completely/unknown',
+    ])('%s without an id produces no response at all', async (method) => {
+      expect(await send({ jsonrpc: '2.0', method })).toBeNull();
+    });
+
+    test('tools/call without an id is silent even though it would have run', async () => {
+      const calls: string[] = [];
+      const recording = createHandler({
+        serverInfo: { name: 'x', version: '1' },
+        tools: TOOLS,
+        callTool: async (name: string) => {
+          calls.push(name);
+          return [{ type: 'text' as const, text: 'ok' }];
+        },
+      });
+      const res = await recording({
+        jsonrpc: '2.0',
+        method: 'tools/call',
+        params: { name: 'novel_list_projects', arguments: {} },
+      } as never);
+
+      expect(res).toBeNull();
+      expect(calls).toEqual([]);
+    });
+
+    test('a malformed notification is still silent', async () => {
+      // No response is permitted, so a bad version or a missing method cannot
+      // be reported — silence is the only correct answer.
+      expect(await send({ jsonrpc: '1.0', method: 'ping' })).toBeNull();
+      expect(await send({ jsonrpc: '2.0' })).toBeNull();
+      expect(await send({ method: 'ping' })).toBeNull();
+    });
+  });
+
+  describe('request ids', () => {
+    test('accepts a string or a finite number', () => {
+      expect(isValidRequestId('abc')).toBe(true);
+      expect(isValidRequestId(0)).toBe(true);
+      expect(isValidRequestId(-7)).toBe(true);
+      expect(isValidRequestId(1.5)).toBe(true);
+    });
+
+    test('rejects null, booleans, objects and arrays', () => {
+      expect(isValidRequestId(null)).toBe(false);
+      expect(isValidRequestId(undefined)).toBe(false);
+      expect(isValidRequestId(true)).toBe(false);
+      expect(isValidRequestId({})).toBe(false);
+      expect(isValidRequestId([])).toBe(false);
+      expect(isValidRequestId(NaN)).toBe(false);
+    });
+
+    test('id: null is an invalid request, not a notification', async () => {
+      // JSON-RPC 2.0 permits a null id; MCP does not, and treating it as valid
+      // would make the answer indistinguishable from "id unknown".
+      const res = await send({ jsonrpc: '2.0', id: null, method: 'tools/list' });
+      expect(res).not.toBeNull();
+      expect((res as { error: { code: number } }).error.code).toBe(
+        JSON_RPC_ERRORS.invalidRequest
+      );
+    });
+
+    test.each([true, {}, [], 1.5e400])(
+      'an id of %p that cannot be echoed is answered with a null id',
+      async (id) => {
+        const res = (await send({ jsonrpc: '2.0', id, method: 'tools/list' })) as {
+          id: unknown;
+          error: { code: number };
+        };
+        // Per JSON-RPC: when the id cannot be determined, report null.
+        expect(res.error.code).toBe(JSON_RPC_ERRORS.invalidRequest);
+        expect(res.id).toBeNull();
+      }
+    );
+
+    test('a valid id is echoed back on both success and error', async () => {
+      const ok = (await send({ jsonrpc: '2.0', id: 'req-1', method: 'tools/list' })) as {
+        id: string;
+      };
+      expect(ok.id).toBe('req-1');
+
+      const bad = (await send({ jsonrpc: '2.0', id: 99, method: 'nope/nope' })) as {
+        id: number;
+      };
+      expect(bad.id).toBe(99);
+    });
+  });
+
+  describe('the jsonrpc field', () => {
+    test.each([undefined, '1.0', '2', 2.0, null])(
+      'a version of %p is an invalid request',
+      async (jsonrpc) => {
+        const res = (await send({ jsonrpc, id: 1, method: 'tools/list' })) as {
+          error: { code: number };
+        };
+        expect(res.error.code).toBe(JSON_RPC_ERRORS.invalidRequest);
+      }
+    );
+
+    test('exactly "2.0" is accepted', async () => {
+      const res = (await send({ jsonrpc: '2.0', id: 1, method: 'tools/list' })) as {
+        result: { tools: unknown[] };
+      };
+      expect(res.result.tools).toHaveLength(4);
+    });
+
+    test('every response declares jsonrpc 2.0 itself', async () => {
+      const ok = (await send({ jsonrpc: '2.0', id: 1, method: 'ping' })) as {
+        jsonrpc: string;
+      };
+      const err = (await send({ jsonrpc: '2.0', id: 2, method: 'nope' })) as {
+        jsonrpc: string;
+      };
+      expect(ok.jsonrpc).toBe('2.0');
+      expect(err.jsonrpc).toBe('2.0');
+    });
+  });
+
+  describe('messages that are not request objects', () => {
+    test.each([null, undefined, 'a string', 42, true, []])(
+      '%p is answered as an invalid request with a null id',
+      async (message) => {
+        const res = (await send(message)) as { id: unknown; error: { code: number } };
+        expect(res.error.code).toBe(JSON_RPC_ERRORS.invalidRequest);
+        expect(res.id).toBeNull();
+      }
+    );
+  });
+
+  describe('a well-formed request still reaches its method', () => {
+    test('missing method on a request is reported', async () => {
+      const res = (await send({ jsonrpc: '2.0', id: 1 })) as { error: { code: number } };
+      expect(res.error.code).toBe(JSON_RPC_ERRORS.invalidRequest);
+    });
+
+    test('tools/call without a tool name is invalid params, not invalid request', async () => {
+      const res = (await send({
+        jsonrpc: '2.0',
+        id: 1,
+        method: 'tools/call',
+        params: {},
+      })) as { error: { code: number } };
+      expect(res.error.code).toBe(JSON_RPC_ERRORS.invalidParams);
+    });
+
+    test('ping answers an empty result', async () => {
+      const res = (await send({ jsonrpc: '2.0', id: 7, method: 'ping' })) as {
+        result: unknown;
+      };
+      expect(res.result).toEqual({});
+    });
   });
 });
 

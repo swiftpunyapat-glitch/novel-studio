@@ -10,7 +10,7 @@
  * so there is no argument value that produces one.
  *
  * `assertReadOnly` then re-checks the produced plan against that same fixed
- * set, and `tests/unit/mcp-tools.test.ts` asserts it over every tool. Adding a
+ * set, and `tests/unit/mcp-read-only.test.ts` asserts it over every tool. Adding a
  * mutating tool would require defeating all three deliberately.
  *
  * Pure: no network, no environment, no filesystem. `client.mjs` performs the
@@ -97,6 +97,29 @@ function optionalPositiveInt(value, label, max) {
 const seg = encodeURIComponent;
 
 /**
+ * MCP tool annotations, identical for all four tools because all four are the
+ * same kind of operation: a read.
+ *
+ * These are ADVISORY METADATA. The MCP specification is explicit that a client
+ * must not treat annotations as a guarantee from an untrusted server, and this
+ * server does not ask it to: the read-only property is enforced structurally by
+ * the route templates and `assertReadOnly` above, and those remain the
+ * authority. The annotations exist so a client can present these tools sensibly
+ * — auto-approving a read, say — without having to infer intent from a name.
+ *
+ *   readOnlyHint    the tool does not modify its environment
+ *   destructiveHint nothing is removed or overwritten
+ *   idempotentHint  repeating a call has no additional effect
+ *   openWorldHint   the world is one Novel Studio instance, not the internet
+ */
+const READ_ONLY_ANNOTATIONS = {
+  readOnlyHint: true,
+  destructiveHint: false,
+  idempotentHint: true,
+  openWorldHint: false,
+};
+
+/**
  * The four tools, exactly as advertised over MCP.
  *
  * Descriptions are written for the model: they say what the tool reads, and
@@ -115,6 +138,7 @@ export const TOOLS = [
       properties: {},
       additionalProperties: false,
     },
+    annotations: { ...READ_ONLY_ANNOTATIONS },
   },
   {
     name: 'novel_get_structure',
@@ -134,6 +158,7 @@ export const TOOLS = [
       required: ['projectId'],
       additionalProperties: false,
     },
+    annotations: { ...READ_ONLY_ANNOTATIONS },
   },
   {
     name: 'novel_get_chapter_text',
@@ -163,6 +188,7 @@ export const TOOLS = [
       required: ['projectId', 'chapterId'],
       additionalProperties: false,
     },
+    annotations: { ...READ_ONLY_ANNOTATIONS },
   },
   {
     name: 'novel_search_manuscript',
@@ -194,6 +220,7 @@ export const TOOLS = [
       required: ['projectId', 'query'],
       additionalProperties: false,
     },
+    annotations: { ...READ_ONLY_ANNOTATIONS },
   },
 ];
 

@@ -33,6 +33,55 @@ There is no tool that creates, edits, saves, deletes or publishes, and none is
 planned for V1. If an assistant is asked to change something, the correct
 answer is that the change has to be made in Novel Studio itself.
 
+All four carry the same MCP annotations:
+
+```json
+{ "readOnlyHint": true, "destructiveHint": false, "idempotentHint": true, "openWorldHint": false }
+```
+
+These are **advisory metadata**, and the specification is explicit that a client
+must not take an untrusted server's annotations as a guarantee. This server does
+not ask it to: the read-only property is enforced structurally, as described
+below, and those guards remain the authority. The annotations exist so a client
+can present the tools sensibly — auto-approving a read, for instance — without
+inferring intent from a tool name.
+
+---
+
+## Protocol era — 2025 (legacy) stdio, deliberately
+
+The server negotiates these revisions, newest first:
+
+```
+2025-11-25   ← preferred
+2025-06-18
+2025-03-26
+2024-11-05
+```
+
+It does **not** claim `2026-07-28` or later. That revision opens a different,
+modern era with `server/discover` and per-request metadata, none of which is
+implemented here. Advertising it would be a lie a client would act on: it would
+go looking for discovery and receive a method-not-found. A client asking for a
+modern version is answered with `2025-11-25` instead and decides for itself
+whether to continue.
+
+Modern-era support is out of scope for V1. A version belongs in
+`SUPPORTED_PROTOCOL_VERSIONS` only once the server actually implements it.
+
+### JSON-RPC strictness
+
+- `jsonrpc` must be exactly `"2.0"`.
+- A request id, when present, must be a string or a finite number. `null` is
+  **not** a valid MCP request id — JSON-RPC permits it, MCP does not, and it
+  would collide with the value used to mean "the id could not be determined".
+- A **notification is a message with no `id` property at all**, not one whose
+  id is `null`. `{ "id": null, … }` is a malformed request and is answered;
+  `{ }` is a notification and is not.
+- A notification never receives a response — including a malformed one, and
+  including `tools/list` or `tools/call` sent without an id. Answering a
+  notification is the classic way to wedge a stdio client.
+
 ---
 
 ## Why it cannot write
@@ -53,6 +102,8 @@ Four independent barriers, each of which would have to be removed deliberately:
    checks that no tool name matches a mutating verb, that only search uses
    `POST`, that every path is under `/api/ai/`, and that `assertReadOnly`
    rejects a write. A save tool fails the suite whatever else is updated.
+
+The tool annotations are a fifth, advisory layer. They are not one of the four.
 
 The Firebase Admin SDK bypasses `firestore.rules`, so the route handlers are
 the only access control on this path. They are not weakened by this feature and

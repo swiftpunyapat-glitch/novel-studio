@@ -7,12 +7,32 @@
  * is a poor place to add a dependency tree nobody in this repository has read.
  * There is nothing to install and nothing to audit but these three files.
  *
+ * PROTOCOL ERA — deliberately 2025-era (legacy) stdio.
+ *
+ * This server speaks the 2025 line of revisions and negotiates down to
+ * 2024-11-05. It does NOT claim 2026-07-28 or later: that revision opens a
+ * different, modern era with `server/discover` and per-request metadata, none
+ * of which is implemented here. Advertising it would be a lie a client would
+ * act on — it would go looking for discovery and get a method-not-found. A
+ * client asking for a modern version is answered with our newest instead, and
+ * decides for itself whether to continue.
+ *
  * Pure message handling: a message in, a message out. The tool executor is
  * injected, so this module is testable without a network or a subprocess.
  */
 
-/** Newest first. The client's choice is honoured when we know it. */
-export const SUPPORTED_PROTOCOL_VERSIONS = ['2025-06-18', '2025-03-26', '2024-11-05'];
+/**
+ * Newest first. The client's choice is honoured when we know it.
+ *
+ * All four are 2025-era or older. See the era note above before adding to this
+ * list: a version belongs here only once the server actually implements it.
+ */
+export const SUPPORTED_PROTOCOL_VERSIONS = [
+  '2025-11-25',
+  '2025-06-18',
+  '2025-03-26',
+  '2024-11-05',
+];
 export const PREFERRED_PROTOCOL_VERSION = SUPPORTED_PROTOCOL_VERSIONS[0];
 
 export const JSON_RPC_ERRORS = {
@@ -58,6 +78,36 @@ export function errorResponse(id, code, message) {
 }
 
 /**
+ * A usable MCP request id.
+ *
+ * JSON-RPC 2.0 permits `null` as an id; MCP does not. Treating `null` as a
+ * valid id would also collide with the value this server uses to say "the id
+ * could not be determined", so a response to one would be indistinguishable
+ * from a response to a malformed message.
+ *
+ * @param {unknown} value
+ */
+export function isValidRequestId(value) {
+  if (typeof value === 'string') return true;
+  return typeof value === 'number' && Number.isFinite(value);
+}
+
+/**
+ * A notification is a message with NO `id` property at all.
+ *
+ * Not `id === null`, and not `id === undefined` arrived at by a missing key
+ * being read off the object — the distinction matters because `{ id: null }`
+ * is a malformed REQUEST, which must be answered, while `{}` is a notification,
+ * which must not be. Answering a notification is the classic way to wedge a
+ * stdio client.
+ *
+ * @param {object} message
+ */
+export function isNotification(message) {
+  return !Object.prototype.hasOwnProperty.call(message, 'id');
+}
+
+/**
  * Builds the message handler.
  *
  * @param {Object} options
@@ -71,19 +121,45 @@ export function createHandler({ serverInfo, tools, callTool }) {
    * @returns {Promise<JsonRpcResponse|null>} The response, or null for a notification.
    */
   return async function handle(message) {
+    // Not an object at all, so it cannot be a notification and an error is
+    // permitted. The id is unknowable, which JSON-RPC reports as null.
     if (!message || typeof message !== 'object' || Array.isArray(message)) {
-      return errorResponse(null, JSON_RPC_ERRORS.invalidRequest, 'Expected a JSON-RPC object.');
+      return errorResponse(
+        null,
+        JSON_RPC_ERRORS.invalidRequest,
+        'Expected a JSON-RPC 2.0 request object.'
+      );
     }
 
-    const { id, method, params } = message;
-    // A notification carries no id and must never be answered — replying to one
-    // is the classic way to wedge a stdio client.
-    const isNotification = id === undefined || id === null;
+    const hasId = !isNotification(message);
+    const { jsonrpc, id, method, params } = message;
+
+    // An id that is present but unusable — null, a boolean, an object. The
+    // message is a request, so it is answered, but with a null id because the
+    // one supplied cannot be echoed back.
+    if (hasId && !isValidRequestId(id)) {
+      return errorResponse(
+        null,
+        JSON_RPC_ERRORS.invalidRequest,
+        'Request id must be a string or a number.'
+      );
+    }
+
+    // From here on, silence is the only permitted answer to a notification —
+    // including a malformed one, and including one whose method we would
+    // otherwise reject. `notifications/initialized` lands here, as intended.
+    if (!hasId) return null;
+
+    if (jsonrpc !== '2.0') {
+      return errorResponse(
+        id,
+        JSON_RPC_ERRORS.invalidRequest,
+        'Unsupported JSON-RPC version: expected "2.0".'
+      );
+    }
 
     if (typeof method !== 'string') {
-      return isNotification
-        ? null
-        : errorResponse(id, JSON_RPC_ERRORS.invalidRequest, 'Missing method.');
+      return errorResponse(id, JSON_RPC_ERRORS.invalidRequest, 'Missing method.');
     }
 
     switch (method) {
@@ -101,7 +177,7 @@ export function createHandler({ serverInfo, tools, callTool }) {
         });
 
       case 'ping':
-        return isNotification ? null : result(id, {});
+        return result(id, {});
 
       case 'tools/list':
         return result(id, { tools });
@@ -130,9 +206,6 @@ export function createHandler({ serverInfo, tools, callTool }) {
       }
 
       default:
-        // Notifications we do not implement — `notifications/initialized`
-        // above all — are accepted silently, as the protocol requires.
-        if (isNotification) return null;
         return errorResponse(
           id,
           JSON_RPC_ERRORS.methodNotFound,

@@ -32,7 +32,13 @@
  */
 
 import { performRequest, readConfig, scrubSecrets, ApiError } from './lib/client.mjs';
-import { createHandler, errorResponse, JSON_RPC_ERRORS, splitMessages } from './lib/protocol.mjs';
+import {
+  createHandler,
+  errorResponse,
+  isValidRequestId,
+  JSON_RPC_ERRORS,
+  splitMessages,
+} from './lib/protocol.mjs';
 import { formatToolResult, planRequest, ToolInputError, TOOLS } from './lib/tools.mjs';
 
 const SERVER_INFO = { name: 'novel-studio', version: '1.0.0' };
@@ -98,8 +104,10 @@ async function processLine(line) {
     // A handler that throws would otherwise leave the client waiting forever.
     const text = scrubSecrets(err instanceof Error ? err.message : String(err), config.token);
     logToStderr(`handler failed: ${text}`);
-    const id = parsed && typeof parsed === 'object' ? parsed.id ?? null : null;
-    if (id !== null) send(errorResponse(id, JSON_RPC_ERRORS.internalError, text));
+    // Only a real request gets an answer: a notification that failed is still
+    // a notification, and must stay silent.
+    const id = parsed && typeof parsed === 'object' ? parsed.id : undefined;
+    if (isValidRequestId(id)) send(errorResponse(id, JSON_RPC_ERRORS.internalError, text));
   }
 }
 
