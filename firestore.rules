@@ -1,0 +1,81 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    
+    // Helper functions
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+    
+    function isOwner(userId) {
+      return isAuthenticated() && request.auth.uid == userId;
+    }
+    
+    function isProjectOwner(projectId) {
+      return isAuthenticated() && 
+        request.auth.uid == get(/databases/$(database)/documents/projects/$(projectId)).data.ownerId;
+    }
+
+    // 1. User profiles and preferences
+    match /users/{userId} {
+      allow read, write: if isOwner(userId);
+      
+      match /preferences/{prefId} {
+        allow read, write: if isOwner(userId);
+      }
+    }
+
+    // 2. Private Projects and nested workspace collections
+    match /projects/{projectId} {
+      allow create: if isAuthenticated() && request.resource.data.ownerId == request.auth.uid;
+      allow read, update, delete: if isOwner(resource.data.ownerId);
+
+      match /volumes/{volumeId} {
+        allow read, write: if isProjectOwner(projectId);
+      }
+
+      match /chapters/{chapterId} {
+        allow read, write: if isProjectOwner(projectId);
+
+        match /variants/{variantId} {
+          allow read, write: if isProjectOwner(projectId);
+
+          match /revisions/{revisionId} {
+            allow read, write: if isProjectOwner(projectId);
+          }
+        }
+      }
+
+      match /characters/{characterId} {
+        allow read, write: if isProjectOwner(projectId);
+
+        match /references/{referenceId} {
+          allow read, write: if isProjectOwner(projectId);
+        }
+      }
+
+      match /publications/{pubId} {
+        allow read: if isProjectOwner(projectId);
+        // Direct client writes forbidden; publishing must happen through trusted Server Action
+        allow write: if false;
+      }
+    }
+
+    // 3. Public Reader collections
+    // WORLD READABLE, STRICTLY WRITE PROTECTED (Only Firebase Admin SDK can write)
+    match /publicProjects/{projectSlug} {
+      allow read: if true;
+      allow write: if false;
+
+      match /volumes/{volumeId} {
+        allow read: if true;
+        allow write: if false;
+      }
+
+      match /chapters/{chapterId} {
+        allow read: if true;
+        allow write: if false;
+      }
+    }
+  }
+}

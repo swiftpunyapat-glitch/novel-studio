@@ -1,0 +1,108 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@import url('https://fonts.googleapis.com/css2?family=Sarabun:ital,wght@0,300;0,400;0,500;0,600;0,700;1,400;1,600&display=swap');
+
+:root {
+  --background: #f8fafc;
+  --foreground: #0f172a;
+  --paper-bg: #ffffff;
+  --paper-text: #1a1a1a;
+  --paper-shadow: 0 4px 20px -2px rgba(0, 0, 0, 0.08);
+}
+
+.dark {
+  --background: #0f172a;
+  --foreground: #f8fafc;
+  --paper-bg: #1e293b;
+  --paper-text: #f1f5f9;
+  --paper-shadow: 0 4px 20px -2px rgba(0, 0, 0, 0.4);
+}
+
+body {
+  background-color: var(--background);
+  color: var(--foreground);
+  font-family: 'Sarabun', sans-serif;
+  margin: 0;
+  padding: 0;
+}
+
+/* Novel manuscript container styling */
+.novel-canvas-wrapper {
+  display: flex;
+  justify-content: center;
+  padding: 2.5rem 1rem;
+}
+
+/* A5 Proportion Dimensions: 148mm x 210mm (Ratio 1 : 1.414) */
+.novel-canvas-a5 {
+  width: 100%;
+  max-width: 650px;
+  min-height: 920px;
+  background-color: var(--paper-bg);
+  color: var(--paper-text);
+  box-shadow: var(--paper-shadow);
+  border-radius: 4px;
+  padding: 50px 45px;
+  box-sizing: border-box;
+}
+
+/* Tiptap Editor Base */
+.ProseMirror {
+  outline: none;
+  font-family: 'Sarabun', sans-serif;
+  font-size: 16pt;
+  line-height: 1.08;
+  color: inherit;
+  word-break: break-word;
+  line-break: normal;
+}
+
+.ProseMirror p {
+  margin: 0;
+  padding: 2px 0;
+  text-indent: 0.5cm;
+  text-align: left;
+}
+
+.ProseMirror p.no-indent {
+  text-indent: 0 !important;
+}
+
+/* Semantic Scene Break */
+.novel-scene-break {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin: 24px 0;
+  user-select: none;
+  font-weight: bold;
+  letter-spacing: 0.3em;
+  color: #64748b;
+  text-indent: 0 !important;
+}
+
+/* Semantic Page Break */
+.novel-page-break {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin: 32px 0;
+  border-top: 1px dashed #94a3b8;
+  user-select: none;
+  text-indent: 0 !important;
+}
+
+.novel-page-break .page-break-label {
+  position: absolute;
+  top: -10px;
+  background-color: var(--paper-bg);
+  padding: 0 10px;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.15em;
+  color: #94a3b8;
+  text-transform: uppercase;
+}
