@@ -48,26 +48,38 @@ body {
   box-sizing: border-box;
 }
 
-/* Tiptap Editor Base */
+/* ---------------------------------------------------------------------------
+   Manuscript formatting is NOT defined here.
+
+   Every value below reads a CSS variable published by NovelEditor from the
+   project's documentSettings (lib/format/effective.ts -> documentSettingsToCssVars).
+   Hardcoding 16pt / 1.08 / 0.5cm in this file was a second source of truth that
+   made project settings invisible while writing. (Audit M2, Stage 3C)
+
+   Paragraphs with explicit overrides carry inline styles that win over these
+   variables, so they stay put when a project default changes.
+
+   Colours here are PRESENTATION ONLY (dark mode / paper tint) and are never
+   part of manuscript formatting or DOCX output.
+--------------------------------------------------------------------------- */
 .ProseMirror {
   outline: none;
-  font-family: 'Sarabun', sans-serif;
-  font-size: 16pt;
-  line-height: 1.08;
+  font-family: var(--novel-font-family, 'Sarabun', sans-serif);
+  font-size: var(--novel-font-size, 16pt);
+  line-height: var(--novel-line-spacing, 1.08);
   color: inherit;
   word-break: break-word;
   line-break: normal;
 }
 
 .ProseMirror p {
-  margin: 0;
-  padding: 2px 0;
-  text-indent: 0.5cm;
-  text-align: left;
-}
-
-.ProseMirror p.no-indent {
-  text-indent: 0 !important;
+  margin-top: var(--novel-paragraph-before, 0pt);
+  margin-bottom: var(--novel-paragraph-after, 0pt);
+  margin-left: var(--novel-left-indent, 0cm);
+  margin-right: var(--novel-right-indent, 0cm);
+  padding: 0;
+  text-indent: var(--novel-first-line-indent, 0.5cm);
+  text-align: var(--novel-text-align, left);
 }
 
 /* Semantic Scene Break */

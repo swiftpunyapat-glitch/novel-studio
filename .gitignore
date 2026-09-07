@@ -39,3 +39,4 @@ firestore-debug.log
 storage-debug.log
 ui-debug.log
 .firebase/
+tests/output/

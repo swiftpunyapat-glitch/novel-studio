@@ -3,6 +3,8 @@
 import React, { useEffect, useState, useCallback } from 'react';
 import Link from 'next/link';
 import { useParams, usePathname } from 'next/navigation';
+import { useAuth } from '@/lib/firebase/auth';
+import { ExportDialog } from '@/components/editor/ExportDialog';
 import { getProject, getVolumes, getChapters, createVolume, createChapter } from '@/lib/firebase/firestore';
 import { Project, Volume, Chapter } from '@/types/project';
 import { 
@@ -24,12 +26,16 @@ export default function ProjectWorkspaceLayout({ children }: { children: React.R
   const params = useParams();
   const pathname = usePathname();
   const projectId = params?.projectId as string;
+  // The export dialog defaults to whatever chapter is open in the editor.
+  const currentChapterId = pathname.match(/\/write\/([^/]+)/)?.[1];
 
   const [project, setProject] = useState<Project | null>(null);
   const [volumes, setVolumes] = useState<Volume[]>([]);
   const [chapters, setChapters] = useState<Chapter[]>([]);
   const [loading, setLoading] = useState(true);
   const [expandedVolumes, setExpandedVolumes] = useState<Record<string, boolean>>({});
+  const [exportOpen, setExportOpen] = useState(false);
+  const { user } = useAuth();
 
   const loadData = useCallback(async () => {
     if (!projectId) return;
@@ -223,8 +229,33 @@ export default function ProjectWorkspaceLayout({ children }: { children: React.R
           >
             <Settings className="w-4 h-4" /> Document Format
           </Link>
+
+          <button
+            type="button"
+            onClick={() => setExportOpen(true)}
+            disabled={!user || chapters.length === 0}
+            title={
+              chapters.length === 0
+                ? 'Create a chapter before exporting'
+                : 'Export the manuscript to Word (.docx)'
+            }
+            className="w-full flex items-center gap-2 py-2 px-2.5 rounded-md text-xs font-medium transition-colors text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800 disabled:opacity-40 disabled:cursor-not-allowed"
+          >
+            <Download className="w-4 h-4" /> Export to Word
+          </button>
         </div>
       </aside>
+
+      {exportOpen && project && user && (
+        <ExportDialog
+          project={project}
+          chapters={chapters}
+          volumes={volumes}
+          currentChapterId={currentChapterId}
+          getIdToken={() => user.getIdToken()}
+          onClose={() => setExportOpen(false)}
+        />
+      )}
 
       {/* Main Content Pane */}
       <main className="flex-1 flex flex-col overflow-hidden bg-slate-100 dark:bg-slate-950">

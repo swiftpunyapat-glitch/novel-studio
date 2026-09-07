@@ -4,7 +4,8 @@ import React, { useEffect, useState, useRef, useCallback, useImperativeHandle, f
 import { useEditor, EditorContent, type Editor } from '@tiptap/react';
 import StarterKit from '@tiptap/starter-kit';
 import Underline from '@tiptap/extension-underline';
-import TextAlign from '@tiptap/extension-text-align';
+import TextStyle from '@tiptap/extension-text-style';
+import FontFamily from '@tiptap/extension-font-family';
 
 import { Chapter, DraftVariant, DocumentSettings, readContentVersion } from '@/types/project';
 import {
@@ -27,13 +28,19 @@ import {
 
 import { SceneBreakExtension } from '@/lib/editor/extensions/SceneBreakExtension';
 import { PageBreakExtension } from '@/lib/editor/extensions/PageBreakExtension';
-import { FirstLineIndentExtension } from '@/lib/editor/extensions/FirstLineIndentExtension';
-import { LineSpacingExtension } from '@/lib/editor/extensions/LineSpacingExtension';
+import { ManuscriptParagraph } from '@/lib/editor/extensions/ManuscriptParagraph';
+import { ParagraphFormatExtension } from '@/lib/editor/extensions/ParagraphFormatExtension';
+import { FontSizeExtension } from '@/lib/editor/extensions/FontSizeExtension';
+import { STARTER_KIT_OPTIONS } from '@/lib/editor/manuscript-schema';
+import { documentSettingsToCssVars } from '@/lib/format/effective';
+import { normalizeManuscriptDoc } from '@/lib/format/normalize';
+import type { ParagraphOverrides } from '@/lib/format/effective';
 
 import { FormattingToolbar } from './FormattingToolbar';
 import { ChapterMetadataHeader } from './ChapterMetadataHeader';
 import { ConflictDialog } from './ConflictDialog';
 import { RecoveryDialog } from './RecoveryDialog';
+import { ParagraphSettingsDialog } from './ParagraphSettingsDialog';
 
 /** Imperative surface the page uses so Checkpoint reads LIVE editor state. */
 export interface NovelEditorHandle {
@@ -71,6 +78,7 @@ export const NovelEditor = forwardRef<NovelEditorHandle, NovelEditorProps>(funct
   const [conflict, setConflict] = useState<ConflictState | null>(null);
   const [recovery, setRecovery] = useState<MirrorSnapshot | null>(null);
   const [busy, setBusy] = useState(false);
+  const [paragraphDialogOpen, setParagraphDialogOpen] = useState(false);
 
   const sessionIdRef = useRef<string>(
     typeof crypto !== 'undefined' && crypto.randomUUID
@@ -82,21 +90,28 @@ export const NovelEditor = forwardRef<NovelEditorHandle, NovelEditorProps>(funct
 
   const editor = useEditor({
     extensions: [
-      StarterKit.configure({ heading: false }),
+      // Block types the DOCX mapper cannot export are disabled outright rather
+      // than left in the schema to be silently dropped. (Audit H2, Stage 3F)
+      StarterKit.configure(STARTER_KIT_OPTIONS),
+      ManuscriptParagraph,
       Underline,
-      TextAlign.configure({ types: ['paragraph'] }),
+      TextStyle,
+      FontFamily.configure({ types: ['textStyle'] }),
+      FontSizeExtension,
       SceneBreakExtension,
       PageBreakExtension,
-      FirstLineIndentExtension,
-      LineSpacingExtension,
+      ParagraphFormatExtension,
     ],
-    content: (variant.content?.content?.length
-      ? variant.content
-      : { type: 'doc', content: [{ type: 'paragraph' }] }) as never,
+    // Legacy baked defaults are converted to the tri-state override model
+    // exactly once, at load. (Stage 3B)
+    content: normalizeManuscriptDoc(
+      variant.content?.content?.length
+        ? variant.content
+        : { type: 'doc', content: [{ type: 'paragraph' }] }
+    ).doc as never,
     editorProps: {
       attributes: {
         class: 'focus:outline-none min-h-[500px]',
-        style: `font-family: '${documentSettings.bodyFont}', sans-serif; font-size: ${documentSettings.bodyFontSizePt}pt;`,
       },
     },
     onUpdate: ({ editor: ed }) => {
@@ -306,10 +321,25 @@ export const NovelEditor = forwardRef<NovelEditorHandle, NovelEditorProps>(funct
 
   return (
     <div className="flex-1 flex flex-col overflow-hidden">
-      <FormattingToolbar editor={editor} autosaveStatus={autosaveStatus} wordCount={wordCount} />
+      <FormattingToolbar
+        editor={editor}
+        autosaveStatus={autosaveStatus}
+        wordCount={wordCount}
+        settings={documentSettings}
+        onOpenParagraphSettings={() => setParagraphDialogOpen(true)}
+      />
 
       <div className="flex-1 overflow-y-auto novel-canvas-wrapper">
-        <div className="novel-canvas-a5">
+        {/*
+          Project defaults are published as CSS variables here, so a paragraph
+          that inherits reflects a settings change immediately, while a
+          paragraph with explicit overrides keeps its own inline values.
+          (Stage 3C)
+        */}
+        <div
+          className="novel-canvas-a5"
+          style={documentSettingsToCssVars(documentSettings) as React.CSSProperties}
+        >
           <ChapterMetadataHeader chapter={chapter} projectId={projectId} />
           <EditorContent editor={editor} />
         </div>
@@ -325,6 +355,20 @@ export const NovelEditor = forwardRef<NovelEditorHandle, NovelEditorProps>(funct
           onRestoreLocal={handleRestoreLocal}
           onUseRemote={handleUseRemote}
           onPreserveAsVariant={handlePreserveRecoveryAsVariant}
+        />
+      )}
+
+      {paragraphDialogOpen && editor && (
+        <ParagraphSettingsDialog
+          attrs={editor.getAttributes('paragraph')}
+          settings={documentSettings}
+          onApply={(overrides: Partial<ParagraphOverrides>) => {
+            editor.chain().focus().setParagraphFormat(overrides).run();
+          }}
+          onResetToDefault={() => {
+            editor.chain().focus().resetParagraphFormat().run();
+          }}
+          onClose={() => setParagraphDialogOpen(false)}
         />
       )}
 

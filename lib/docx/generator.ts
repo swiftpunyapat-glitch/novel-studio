@@ -5,206 +5,375 @@ import {
   TextRun,
   PageBreak,
   AlignmentType,
-  convertMillimetersToTwip,
   LineRuleType,
+  UnderlineType,
+  convertMillimetersToTwip,
+  type ISectionOptions,
+  type IParagraphOptions,
 } from 'docx';
-import { DocumentSettings } from '@/types/project';
+import type { DocumentSettings } from '@/types/project';
+import {
+  resolveParagraphFormat,
+  resolveRunFormat,
+  cmToTwip,
+  ptToTwip,
+  ptToHalfPoints,
+  multiplierToLineTwip,
+  type Alignment,
+} from '@/lib/format/effective';
+import { isSupportedNode, UnsupportedNodeError } from '@/lib/editor/manuscript-schema';
 
-interface TiptapContentNode {
+/**
+ * Tiptap -> OOXML mapper. (Audit H1 / H2, Stage 3H + 3I)
+ *
+ * Rewritten rather than patched. The previous mapper hardcoded left alignment,
+ * ignored every per-paragraph and per-run override, and assumed each block's
+ * children were text nodes — so lists and blockquotes exported as empty runs.
+ *
+ * Three rules govern this file:
+ *   1. Every property comes from `resolveParagraphFormat` / `resolveRunFormat`,
+ *      so export and editor can never disagree about what "effective" means.
+ *   2. The walker is recursive and explicit; an unknown node throws
+ *      `UnsupportedNodeError` rather than emitting an empty paragraph.
+ *   3. Chapter metadata is read from the Chapter model and rendered through
+ *      named paragraph styles. It is never duplicated into ProseMirror JSON.
+ */
+
+interface TiptapNode {
   type?: string;
   text?: string;
-  marks?: Array<{ type: string }>;
-  content?: TiptapContentNode[];
+  marks?: Array<{ type?: string; attrs?: Record<string, unknown> }>;
+  content?: TiptapNode[];
   attrs?: Record<string, unknown>;
 }
 
-interface ChapterExportData {
+export interface ChapterExportData {
   chapterNumber?: number | null;
   title: string;
   subtitle?: string;
   dateText?: string;
   locationText?: string;
-  content: {
-    content?: TiptapContentNode[];
+  content: { type?: string; content?: TiptapNode[] } | null | undefined;
+}
+
+const ALIGNMENT_MAP: Record<Alignment, (typeof AlignmentType)[keyof typeof AlignmentType]> = {
+  left: AlignmentType.LEFT,
+  center: AlignmentType.CENTER,
+  right: AlignmentType.RIGHT,
+  justify: AlignmentType.JUSTIFIED,
+};
+
+/** Named styles for chapter metadata, so formatting is defined once. */
+const STYLE_IDS = {
+  chapterNumber: 'NovelChapterNumber',
+  chapterTitle: 'NovelChapterTitle',
+  chapterSubtitle: 'NovelChapterSubtitle',
+  chapterContext: 'NovelChapterContext',
+  sceneBreak: 'NovelSceneBreak',
+} as const;
+
+function buildStyles(settings: DocumentSettings) {
+  const font = settings.bodyFont;
+  const bodyHalfPt = ptToHalfPoints(settings.bodyFontSizePt);
+
+  const centered = {
+    alignment: AlignmentType.CENTER,
+    indent: { firstLine: 0, left: 0, right: 0 },
   };
+
+  return {
+    default: {
+      document: {
+        run: {
+          font,
+          size: bodyHalfPt,
+        },
+        paragraph: {
+          spacing: {
+            before: ptToTwip(settings.paragraphSpacingBeforePt),
+            after: ptToTwip(settings.paragraphSpacingAfterPt),
+            line: multiplierToLineTwip(settings.lineSpacingMultiplier),
+            lineRule: LineRuleType.AUTO,
+          },
+        },
+      },
+    },
+    paragraphStyles: [
+      {
+        id: STYLE_IDS.chapterNumber,
+        name: 'Novel Chapter Number',
+        basedOn: 'Normal',
+        next: 'Normal',
+        quickFormat: true,
+        run: { font, size: ptToHalfPoints(12), bold: true, allCaps: true },
+        paragraph: { ...centered, spacing: { before: ptToTwip(12), after: ptToTwip(6) } },
+      },
+      {
+        id: STYLE_IDS.chapterTitle,
+        name: 'Novel Chapter Title',
+        basedOn: 'Normal',
+        next: 'Normal',
+        quickFormat: true,
+        run: { font, size: ptToHalfPoints(18), bold: true },
+        paragraph: { ...centered, spacing: { before: ptToTwip(6), after: ptToTwip(9) } },
+      },
+      {
+        id: STYLE_IDS.chapterSubtitle,
+        name: 'Novel Chapter Subtitle',
+        basedOn: 'Normal',
+        next: 'Normal',
+        quickFormat: true,
+        run: { font, size: ptToHalfPoints(14), italics: true },
+        paragraph: { ...centered, spacing: { before: 0, after: ptToTwip(6) } },
+      },
+      {
+        id: STYLE_IDS.chapterContext,
+        name: 'Novel Chapter Context',
+        basedOn: 'Normal',
+        next: 'Normal',
+        quickFormat: true,
+        run: { font, size: ptToHalfPoints(11) },
+        paragraph: { ...centered, spacing: { before: ptToTwip(3), after: ptToTwip(18) } },
+      },
+      {
+        id: STYLE_IDS.sceneBreak,
+        name: 'Novel Scene Break',
+        basedOn: 'Normal',
+        next: 'Normal',
+        quickFormat: true,
+        run: { font, size: bodyHalfPt, bold: true },
+        paragraph: { ...centered, spacing: { before: ptToTwip(12), after: ptToTwip(12) } },
+      },
+    ],
+  };
+}
+
+/**
+ * Builds a run. `font` and `size` are always emitted so Word does not fall back
+ * to its own defaults; the docx library maps a string `font` onto w:ascii,
+ * w:hAnsi, w:eastAsia AND w:cs, and derives w:szCs / w:bCs / w:iCs from
+ * size / bold / italics — which is what keeps Thai (complex script) text in
+ * Sarabun at the right size rather than Word's default Cordia New.
+ */
+function buildRun(node: TiptapNode, settings: DocumentSettings): TextRun {
+  const format = resolveRunFormat(node.marks, settings);
+
+  return new TextRun({
+    text: node.text ?? '',
+    font: format.fontFamily,
+    size: ptToHalfPoints(format.fontSizePt),
+    bold: format.bold,
+    italics: format.italic,
+    strike: format.strike,
+    underline: format.underline ? { type: UnderlineType.SINGLE } : undefined,
+  });
+}
+
+function paragraphOptions(
+  node: TiptapNode,
+  settings: DocumentSettings
+): Omit<IParagraphOptions, 'children'> {
+  const f = resolveParagraphFormat(node.attrs, settings);
+
+  return {
+    alignment: ALIGNMENT_MAP[f.alignment],
+    indent: {
+      firstLine: cmToTwip(f.firstLineIndentCm),
+      left: cmToTwip(f.leftIndentCm),
+      right: cmToTwip(f.rightIndentCm),
+    },
+    spacing: {
+      before: ptToTwip(f.spaceBeforePt),
+      after: ptToTwip(f.spaceAfterPt),
+      line: multiplierToLineTwip(f.lineSpacingMultiplier),
+      lineRule: LineRuleType.AUTO,
+    },
+  };
+}
+
+/** Recursively converts a paragraph's inline children into runs and breaks. */
+function buildInline(
+  nodes: TiptapNode[] | undefined,
+  settings: DocumentSettings,
+  path: string
+): TextRun[] {
+  const out: TextRun[] = [];
+  if (!Array.isArray(nodes)) return out;
+
+  nodes.forEach((child, index) => {
+    const childPath = `${path}/${child?.type ?? 'unknown'}[${index}]`;
+
+    if (!isSupportedNode(child?.type)) {
+      throw new UnsupportedNodeError(child?.type ?? 'undefined', childPath);
+    }
+
+    switch (child.type) {
+      case 'text':
+        out.push(buildRun(child, settings));
+        break;
+
+      case 'hardBreak':
+        // A soft line break inside a paragraph, not a new paragraph.
+        out.push(new TextRun({ break: 1 }));
+        break;
+
+      default:
+        // Nested blocks inside a paragraph are not part of the schema.
+        throw new UnsupportedNodeError(child.type ?? 'undefined', childPath);
+    }
+  });
+
+  return out;
+}
+
+/** Converts one block-level node into one or more DOCX paragraphs. */
+function buildBlock(
+  node: TiptapNode,
+  settings: DocumentSettings,
+  path: string
+): Paragraph[] {
+  if (!isSupportedNode(node?.type)) {
+    throw new UnsupportedNodeError(node?.type ?? 'undefined', path);
+  }
+
+  switch (node.type) {
+    case 'paragraph': {
+      const children = buildInline(node.content, settings, path);
+      return [
+        new Paragraph({
+          ...paragraphOptions(node, settings),
+          // An empty paragraph is meaningful whitespace in a manuscript.
+          children: children.length ? children : [new TextRun({ text: '' })],
+        }),
+      ];
+    }
+
+    case 'sceneBreak':
+      return [
+        new Paragraph({
+          style: STYLE_IDS.sceneBreak,
+          children: [
+            new TextRun({
+              text: settings.sceneBreakSymbol || '***',
+              font: settings.bodyFont,
+              size: ptToHalfPoints(settings.bodyFontSizePt),
+              bold: true,
+            }),
+          ],
+        }),
+      ];
+
+    case 'pageBreak':
+      // A real OOXML page break, not a visual separator.
+      return [new Paragraph({ children: [new PageBreak()] })];
+
+    case 'text':
+    case 'hardBreak':
+      // Inline content must live inside a paragraph.
+      throw new UnsupportedNodeError(node.type, `${path} (inline node at block level)`);
+
+    default:
+      throw new UnsupportedNodeError(node.type ?? 'undefined', path);
+  }
+}
+
+/** Chapter metadata paragraphs, sourced from the Chapter model (Stage 3I). */
+function buildChapterHeading(chapter: ChapterExportData): Paragraph[] {
+  const out: Paragraph[] = [];
+
+  if (chapter.chapterNumber !== null && chapter.chapterNumber !== undefined) {
+    out.push(
+      new Paragraph({
+        style: STYLE_IDS.chapterNumber,
+        children: [new TextRun({ text: `CHAPTER ${chapter.chapterNumber}` })],
+      })
+    );
+  }
+
+  out.push(
+    new Paragraph({
+      style: STYLE_IDS.chapterTitle,
+      children: [new TextRun({ text: chapter.title || 'Untitled Chapter' })],
+    })
+  );
+
+  if (chapter.subtitle) {
+    out.push(
+      new Paragraph({
+        style: STYLE_IDS.chapterSubtitle,
+        children: [new TextRun({ text: chapter.subtitle })],
+      })
+    );
+  }
+
+  const context = [chapter.dateText, chapter.locationText].filter(Boolean).join(' — ');
+  if (context) {
+    out.push(
+      new Paragraph({
+        style: STYLE_IDS.chapterContext,
+        children: [new TextRun({ text: context })],
+      })
+    );
+  }
+
+  return out;
+}
+
+export interface GenerateOptions {
+  /** Page size in millimetres. Defaults to A5. */
+  pageWidthMm?: number;
+  pageHeightMm?: number;
 }
 
 export async function generateDocxDocument(
   projectTitle: string,
   settings: DocumentSettings,
-  chapters: ChapterExportData[]
+  chapters: ChapterExportData[],
+  options: GenerateOptions = {}
 ): Promise<Buffer> {
-  const docxParagraphs: Paragraph[] = [];
+  const paragraphs: Paragraph[] = [];
 
-  // Formula for Multiple 1.08: 240ths of a line -> Math.round(240 * 1.08) = 259
-  const lineSpacingTwip = Math.round(240 * settings.lineSpacingMultiplier);
-  const firstLineTwip = convertMillimetersToTwip(settings.firstLineIndentCm * 10);
-  const marginTwip = convertMillimetersToTwip(settings.margins.topMm);
-
-  chapters.forEach((chap, index) => {
-    // If not first chapter, insert page break between chapters
+  chapters.forEach((chapter, index) => {
+    // Each chapter after the first starts on a fresh page.
     if (index > 0) {
-      docxParagraphs.push(
-        new Paragraph({
-          children: [new PageBreak()],
-        })
-      );
+      paragraphs.push(new Paragraph({ children: [new PageBreak()] }));
     }
 
-    // 1. Chapter Number Heading
-    if (chap.chapterNumber !== null && chap.chapterNumber !== undefined) {
-      docxParagraphs.push(
-        new Paragraph({
-          alignment: AlignmentType.CENTER,
-          spacing: { before: 240, after: 120 },
-          children: [
-            new TextRun({
-              text: `CHAPTER ${chap.chapterNumber}`,
-              font: settings.bodyFont,
-              size: 24, // 12pt
-              bold: true,
-            }),
-          ],
-        })
-      );
-    }
+    paragraphs.push(...buildChapterHeading(chapter));
 
-    // 2. Chapter Title Heading
-    docxParagraphs.push(
-      new Paragraph({
-        alignment: AlignmentType.CENTER,
-        spacing: { before: 120, after: 180 },
-        children: [
-          new TextRun({
-            text: chap.title,
-            font: settings.bodyFont,
-            size: 36, // 18pt
-            bold: true,
-          }),
-        ],
-      })
-    );
-
-    // 3. Subtitle / Context (if present)
-    if (chap.subtitle) {
-      docxParagraphs.push(
-        new Paragraph({
-          alignment: AlignmentType.CENTER,
-          spacing: { before: 0, after: 120 },
-          children: [
-            new TextRun({
-              text: chap.subtitle,
-              font: settings.bodyFont,
-              size: 28, // 14pt
-              italics: true,
-            }),
-          ],
-        })
-      );
-    }
-
-    if (chap.dateText || chap.locationText) {
-      const contextStr = [chap.dateText, chap.locationText].filter(Boolean).join(' — ');
-      docxParagraphs.push(
-        new Paragraph({
-          alignment: AlignmentType.CENTER,
-          spacing: { before: 60, after: 360 },
-          children: [
-            new TextRun({
-              text: contextStr,
-              font: settings.bodyFont,
-              size: 22, // 11pt
-            }),
-          ],
-        })
-      );
-    }
-
-    // 4. Chapter Body Paragraphs
-    const bodyNodes = chap.content?.content || [];
-    bodyNodes.forEach((node) => {
-      if (node.type === 'pageBreak') {
-        docxParagraphs.push(
-          new Paragraph({
-            children: [new PageBreak()],
-          })
-        );
-        return;
-      }
-
-      if (node.type === 'sceneBreak') {
-        docxParagraphs.push(
-          new Paragraph({
-            alignment: AlignmentType.CENTER,
-            spacing: { before: 240, after: 240 },
-            children: [
-              new TextRun({
-                text: settings.sceneBreakSymbol || '***',
-                font: settings.bodyFont,
-                size: settings.bodyFontSizePt * 2,
-                bold: true,
-              }),
-            ],
-          })
-        );
-        return;
-      }
-
-      // Regular Paragraph
-      const textRuns: TextRun[] = (node.content || []).map((textChild) => {
-        const marks = textChild.marks || [];
-        return new TextRun({
-          text: textChild.text || '',
-          font: settings.bodyFont,
-          size: settings.bodyFontSizePt * 2, // docx uses half-points (16pt = 32)
-          bold: marks.some((m) => m.type === 'bold'),
-          italics: marks.some((m) => m.type === 'italic'),
-          underline: marks.some((m) => m.type === 'underline') ? {} : undefined,
-          strike: marks.some((m) => m.type === 'strike'),
-        });
-      });
-
-      const hasNoIndent = node.attrs?.noIndent === true;
-
-      docxParagraphs.push(
-        new Paragraph({
-          alignment: AlignmentType.LEFT,
-          indent: hasNoIndent ? undefined : { firstLine: firstLineTwip },
-          spacing: {
-            before: settings.paragraphSpacingBeforePt * 20,
-            after: settings.paragraphSpacingAfterPt * 20,
-            line: lineSpacingTwip,
-            lineRule: LineRuleType.AUTO,
-          },
-          children: textRuns,
-        })
+    const blocks = chapter.content?.content ?? [];
+    blocks.forEach((node, blockIndex) => {
+      paragraphs.push(
+        ...buildBlock(node, settings, `chapter[${index}]/content[${blockIndex}]`)
       );
     });
   });
 
-  // Construct Document with A5 dimensions (148mm x 210mm)
+  const section: ISectionOptions = {
+    properties: {
+      page: {
+        size: {
+          width: convertMillimetersToTwip(options.pageWidthMm ?? 148),
+          height: convertMillimetersToTwip(options.pageHeightMm ?? 210),
+        },
+        margin: {
+          top: convertMillimetersToTwip(settings.margins.topMm),
+          bottom: convertMillimetersToTwip(settings.margins.bottomMm),
+          left: convertMillimetersToTwip(settings.margins.leftMm),
+          right: convertMillimetersToTwip(settings.margins.rightMm),
+        },
+      },
+    },
+    children: paragraphs,
+  };
+
   const doc = new Document({
     title: projectTitle,
-    sections: [
-      {
-        properties: {
-          page: {
-            size: {
-              width: convertMillimetersToTwip(148),
-              height: convertMillimetersToTwip(210),
-            },
-            margin: {
-              top: marginTwip,
-              bottom: marginTwip,
-              left: marginTwip,
-              right: marginTwip,
-            },
-          },
-        },
-        children: docxParagraphs,
-      },
-    ],
+    styles: buildStyles(settings),
+    sections: [section],
   });
 
-  return await Packer.toBuffer(doc);
+  return Packer.toBuffer(doc);
 }
+
+export { STYLE_IDS };
