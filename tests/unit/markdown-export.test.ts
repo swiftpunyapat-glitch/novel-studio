@@ -2,6 +2,7 @@ import { describe, expect, test } from 'vitest';
 import {
   generateManuscriptMarkdown,
   chapterHeading,
+  volumeHeading,
   escapeMarkdown,
   PAGE_BREAK_MARKER,
   SCENE_BREAK_MARKER,
@@ -195,6 +196,85 @@ describe('Prologue / Chapter / Epilogue headings', () => {
     expect(md).toContain('### Chapter 1 — One');
     expect(md).toContain('### Epilogue');
     expect(md.match(/^### /gm)).toHaveLength(3);
+  });
+});
+
+describe('Default titles are not duplicated in headings', () => {
+  // Novel Studio names new sections after their position, so an author who
+  // never renames one leaves title === label. Joining them read
+  // "Chapter 1 — Chapter 1".
+
+  test('chapter title matching the default label collapses to the label', () => {
+    expect(chapterHeading({ chapterNumber: 1, title: 'Chapter 1' })).toBe('Chapter 1');
+  });
+
+  test('chapter default-title comparison is case-insensitive', () => {
+    expect(chapterHeading({ chapterNumber: 1, title: 'chapter 1' })).toBe('Chapter 1');
+    expect(chapterHeading({ chapterNumber: 1, title: 'CHAPTER 1' })).toBe('Chapter 1');
+  });
+
+  test('chapter default-title comparison ignores extra whitespace', () => {
+    expect(chapterHeading({ chapterNumber: 1, title: '  Chapter   1  ' })).toBe('Chapter 1');
+  });
+
+  test('a custom chapter title is always kept', () => {
+    expect(chapterHeading({ chapterNumber: 1, title: 'Redline' })).toBe('Chapter 1 — Redline');
+  });
+
+  test('a title naming a different number is custom, not redundant', () => {
+    expect(chapterHeading({ chapterNumber: 1, title: 'Chapter 2' })).toBe(
+      'Chapter 1 — Chapter 2'
+    );
+  });
+
+  test('a title merely containing the label is still custom', () => {
+    expect(chapterHeading({ chapterNumber: 1, title: 'Chapter 1 Reprise' })).toBe(
+      'Chapter 1 — Chapter 1 Reprise'
+    );
+  });
+
+  test('volume title matching the default label collapses to the label', () => {
+    expect(volumeHeading({ id: 'v1', volumeNumber: 1, title: 'Volume 1' })).toBe('Volume 1');
+  });
+
+  test('volume default-title comparison is case-insensitive', () => {
+    expect(volumeHeading({ id: 'v1', volumeNumber: 1, title: 'volume 1' })).toBe('Volume 1');
+    expect(volumeHeading({ id: 'v1', volumeNumber: 1, title: 'VOLUME 1' })).toBe('Volume 1');
+  });
+
+  test('a custom volume title is always kept', () => {
+    expect(volumeHeading({ id: 'v1', volumeNumber: 1, title: 'Bangkok Nights' })).toBe(
+      'Volume 1 — Bangkok Nights'
+    );
+  });
+
+  test('an untitled volume still gets its label', () => {
+    expect(volumeHeading({ id: 'v1', volumeNumber: 1, title: '' })).toBe('Volume 1');
+  });
+
+  test('prologue and epilogue dedup is unchanged', () => {
+    expect(chapterHeading({ chapterType: 'prologue', chapterNumber: null, title: 'Prologue' })).toBe(
+      'Prologue'
+    );
+    expect(chapterHeading({ chapterType: 'epilogue', chapterNumber: null, title: 'epilogue' })).toBe(
+      'Epilogue'
+    );
+  });
+
+  test('the whole document is free of duplicated headings', () => {
+    const md = generateManuscriptMarkdown(
+      PROJECT,
+      [
+        chapter({ chapterNumber: 1, title: 'Chapter 1', volumeId: 'vd' }),
+        chapter({ chapterNumber: 2, title: 'Chapter 2', volumeId: 'vd' }),
+      ],
+      { volumes: [{ id: 'vd', volumeNumber: 1, title: 'Volume 1' }] }
+    );
+    expect(md).toContain('## Volume 1\n');
+    expect(md).toContain('### Chapter 1\n');
+    expect(md).toContain('### Chapter 2\n');
+    expect(md).not.toContain('Chapter 1 — Chapter 1');
+    expect(md).not.toContain('Volume 1 — Volume 1');
   });
 });
 

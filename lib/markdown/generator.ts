@@ -164,31 +164,53 @@ function renderBlock(node: MarkdownNode | undefined): string[] {
   }
 }
 
+/**
+ * True when a title says nothing the generated label does not already say.
+ *
+ * Novel Studio names new sections after their position — "Chapter 1",
+ * "Volume 1" — so an author who never renames one leaves a title identical to
+ * the label. Joining them would read "Chapter 1 — Chapter 1".
+ *
+ * Compared case- and whitespace-insensitively, so "chapter 1" and "Chapter  1"
+ * are recognised too. A genuinely custom title never matches and is always kept.
+ */
+function isRedundantTitle(title: string, label: string): boolean {
+  const normalize = (value: string) => value.trim().replace(/\s+/g, ' ').toLowerCase();
+  return normalize(title) === normalize(label);
+}
+
+/**
+ * Joins a label and a title, dropping the title when it merely repeats the
+ * label. The canonical label always wins, so casing stays consistent.
+ */
+function joinHeading(label: string, title: string): string {
+  if (!title || isRedundantTitle(title, label)) return label;
+  return `${label} — ${title}`;
+}
+
 /** Chapter heading text, e.g. "Chapter 1 — The Long Road", "Prologue". */
 export function chapterHeading(chapter: MarkdownChapterInput): string {
   const type: ChapterType = chapter.chapterType ?? 'chapter';
   const title = (chapter.title ?? '').trim();
 
   if (type === 'prologue' || type === 'epilogue') {
-    const label = type === 'prologue' ? 'Prologue' : 'Epilogue';
-    // A prologue titled "Prologue" should not read "Prologue — Prologue".
-    if (!title || title.toLowerCase() === label.toLowerCase()) return label;
-    return `${label} — ${title}`;
+    return joinHeading(type === 'prologue' ? 'Prologue' : 'Epilogue', title);
   }
 
   const hasNumber = chapter.chapterNumber !== null && chapter.chapterNumber !== undefined;
   if (!hasNumber) return title || 'Untitled Chapter';
-  const label = `Chapter ${chapter.chapterNumber}`;
-  return title ? `${label} — ${title}` : label;
+
+  return joinHeading(`Chapter ${chapter.chapterNumber}`, title);
 }
 
-/** Volume heading text, e.g. "Volume 1 — Bangkok Nights". */
-function volumeHeading(volume: MarkdownVolumeInput): string {
+/** Volume heading text, e.g. "Volume 1 — Bangkok Nights", "Volume 1". */
+export function volumeHeading(volume: MarkdownVolumeInput): string {
   const title = (volume.title ?? '').trim();
   const hasNumber = volume.volumeNumber !== null && volume.volumeNumber !== undefined;
-  const label = hasNumber ? `Volume ${volume.volumeNumber}` : title || 'Volume';
-  if (!hasNumber) return label;
-  return title ? `${label} — ${title}` : label;
+
+  if (!hasNumber) return title || 'Volume';
+
+  return joinHeading(`Volume ${volume.volumeNumber}`, title);
 }
 
 /**
