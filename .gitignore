@@ -40,3 +40,6 @@ storage-debug.log
 ui-debug.log
 .firebase/
 tests/output/
+
+# local MCP client configuration (may carry server env values)
+/.mcp.json
