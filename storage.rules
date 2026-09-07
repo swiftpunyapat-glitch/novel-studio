@@ -1,20 +1,51 @@
 rules_version = '2';
 service firebase.storage {
   match /b/{bucket}/o {
-    
+
     function isAuthenticated() {
       return request.auth != null;
     }
-    
-    // Character reference images are strictly private to authenticated users
-    match /projects/{projectId}/characters/{characterId}/{imageId} {
-      allow read, write: if isAuthenticated();
+
+    // AUDIT C3: authorization must resolve PROJECT OWNERSHIP, not merely
+    // authentication. The previous rule captured {projectId} as a wildcard and
+    // then never used it, so any signed-in user could read, overwrite or
+    // replace every other author's private character reference images.
+    function isProjectOwner(projectId) {
+      return isAuthenticated()
+        && firestore.exists(/databases/(default)/documents/projects/$(projectId))
+        && request.auth.uid ==
+             firestore.get(/databases/(default)/documents/projects/$(projectId)).data.ownerId;
     }
-    
-    // Public assets (e.g. project covers if explicitly published)
+
+    function isAllowedImage() {
+      return request.resource != null
+        && request.resource.size < 10 * 1024 * 1024
+        && request.resource.contentType.matches('image/(png|jpeg|jpg|gif|webp|avif)');
+    }
+
+    // Private character reference images.
+    // Canonical metadata is the storagePath in Firestore; access is granted
+    // here per-request rather than through permanent public download URLs.
+    match /projects/{projectId}/characters/{characterId}/{imageId} {
+      allow read: if isProjectOwner(projectId);
+      allow write: if isProjectOwner(projectId) && isAllowedImage();
+      allow delete: if isProjectOwner(projectId);
+    }
+
+    // Any other path under a project is owner-only by default.
+    match /projects/{projectId}/{allPaths=**} {
+      allow read, write: if isProjectOwner(projectId);
+    }
+
+    // Explicitly published public assets (e.g. cover art).
     match /public/{allPaths=**} {
       allow read: if true;
       allow write: if false;
+    }
+
+    // Deny anything not matched above.
+    match /{allPaths=**} {
+      allow read, write: if false;
     }
   }
 }

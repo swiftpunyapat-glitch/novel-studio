@@ -1,28 +1,48 @@
-import { NextRequest, NextResponse } from 'next/server';
-import { validateAiToken } from '@/lib/ai/auth';
+import { NextResponse } from 'next/server';
+import { authenticateAiRequest } from '@/lib/ai/auth';
+import { resolveOwnedProject, clampLimit } from '@/lib/ai/scope';
 import { adminDb } from '@/lib/firebase/admin';
 
+export const dynamic = 'force-dynamic';
+
+interface SearchResult {
+  chapterId: string;
+  chapterTitle: string;
+  volumeTitle: string;
+  snippet: string;
+  matchIndex: number;
+}
+
 export async function POST(
-  req: NextRequest,
+  req: Request,
   { params }: { params: { projectId: string } }
 ) {
-  const authError = validateAiToken(req);
-  if (authError) return authError;
-
-  const { projectId } = params;
+  const auth = authenticateAiRequest(req);
+  if ('response' in auth) return auth.response;
 
   try {
-    const body = await req.json();
-    const queryStr = (body.query || '').trim();
-    const limitCount = body.limit || 20;
+    const scoped = await resolveOwnedProject(auth.principal.ownerUid, params.projectId);
+    if (!scoped) {
+      return NextResponse.json({ error: 'Project not found' }, { status: 404 });
+    }
 
+    let body: { query?: unknown; limit?: unknown };
+    try {
+      body = await req.json();
+    } catch {
+      return NextResponse.json({ error: 'Malformed request body' }, { status: 400 });
+    }
+
+    const queryStr = typeof body.query === 'string' ? body.query.trim() : '';
     if (!queryStr) {
       return NextResponse.json({ error: 'Missing search query' }, { status: 400 });
     }
+    const limitCount = clampLimit(body.limit);
 
+    const projectRef = adminDb.collection('projects').doc(scoped.projectId);
     const [volsSnap, chapsSnap] = await Promise.all([
-      adminDb.collection('projects').doc(projectId).collection('volumes').get(),
-      adminDb.collection('projects').doc(projectId).collection('chapters').get(),
+      projectRef.collection('volumes').get(),
+      projectRef.collection('chapters').get(),
     ]);
 
     const volumeMap = new Map<string, string>();
@@ -30,55 +50,53 @@ export async function POST(
       volumeMap.set(d.id, d.data().title || 'Untitled Volume');
     });
 
-    const results: Array<{
-      chapterId: string;
-      chapterTitle: string;
-      volumeTitle: string;
-      snippet: string;
-      matchIndex: number;
-    }> = [];
+    // Fetch active variants in parallel rather than one round-trip per chapter.
+    const chapters = chapsSnap.docs
+      .map((d) => ({ id: d.id, data: d.data() }))
+      .filter((c) => typeof c.data.activeVariantId === 'string' && c.data.activeVariantId);
 
+    const variantDocs = await Promise.all(
+      chapters.map((c) =>
+        projectRef
+          .collection('chapters')
+          .doc(c.id)
+          .collection('variants')
+          .doc(c.data.activeVariantId as string)
+          .get()
+      )
+    );
+
+    const results: SearchResult[] = [];
     const lowerQuery = queryStr.toLowerCase();
 
-    // Scan active variants of chapters
-    for (const chapDoc of chapsSnap.docs) {
-      const chapData = chapDoc.data();
-      if (!chapData.activeVariantId) continue;
-
-      const varDoc = await adminDb
-        .collection('projects')
-        .doc(projectId)
-        .collection('chapters')
-        .doc(chapDoc.id)
-        .collection('variants')
-        .doc(chapData.activeVariantId)
-        .get();
-
+    outer: for (let i = 0; i < chapters.length; i++) {
+      const varDoc = variantDocs[i];
       if (!varDoc.exists) continue;
-      const plainText = varDoc.data()?.plainText || '';
+
+      const chapter = chapters[i];
+      const plainText: string = varDoc.data()?.plainText || '';
       const lowerText = plainText.toLowerCase();
 
       let startIndex = 0;
       while ((startIndex = lowerText.indexOf(lowerQuery, startIndex)) !== -1) {
         const snippetStart = Math.max(0, startIndex - 40);
         const snippetEnd = Math.min(plainText.length, startIndex + queryStr.length + 40);
-        const snippet = (snippetStart > 0 ? '...' : '') +
+        const snippet =
+          (snippetStart > 0 ? '...' : '') +
           plainText.substring(snippetStart, snippetEnd).replace(/\n+/g, ' ') +
           (snippetEnd < plainText.length ? '...' : '');
 
         results.push({
-          chapterId: chapDoc.id,
-          chapterTitle: chapData.title,
-          volumeTitle: volumeMap.get(chapData.volumeId) || 'Unknown Volume',
+          chapterId: chapter.id,
+          chapterTitle: chapter.data.title,
+          volumeTitle: volumeMap.get(chapter.data.volumeId) || 'Unknown Volume',
           snippet,
           matchIndex: startIndex,
         });
 
-        if (results.length >= limitCount) break;
+        if (results.length >= limitCount) break outer;
         startIndex += queryStr.length;
       }
-
-      if (results.length >= limitCount) break;
     }
 
     return NextResponse.json({
@@ -86,8 +104,8 @@ export async function POST(
       totalMatches: results.length,
       results,
     });
-  } catch (err: unknown) {
-    const message = err instanceof Error ? err.message : 'Unknown error';
-    return NextResponse.json({ error: message }, { status: 500 });
+  } catch (err) {
+    console.error('AI search request failed', err);
+    return NextResponse.json({ error: 'Request failed' }, { status: 500 });
   }
 }

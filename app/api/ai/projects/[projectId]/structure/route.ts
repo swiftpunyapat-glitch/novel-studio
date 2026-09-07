@@ -1,26 +1,27 @@
-import { NextRequest, NextResponse } from 'next/server';
-import { validateAiToken } from '@/lib/ai/auth';
+import { NextResponse } from 'next/server';
+import { authenticateAiRequest } from '@/lib/ai/auth';
+import { resolveOwnedProject } from '@/lib/ai/scope';
 import { adminDb } from '@/lib/firebase/admin';
 
+export const dynamic = 'force-dynamic';
+
 export async function GET(
-  req: NextRequest,
+  req: Request,
   { params }: { params: { projectId: string } }
 ) {
-  const authError = validateAiToken(req);
-  if (authError) return authError;
-
-  const { projectId } = params;
+  const auth = authenticateAiRequest(req);
+  if ('response' in auth) return auth.response;
 
   try {
-    const projectDoc = await adminDb.collection('projects').doc(projectId).get();
-    if (!projectDoc.exists) {
+    const scoped = await resolveOwnedProject(auth.principal.ownerUid, params.projectId);
+    if (!scoped) {
       return NextResponse.json({ error: 'Project not found' }, { status: 404 });
     }
-    const projectData = projectDoc.data();
 
+    const projectRef = adminDb.collection('projects').doc(scoped.projectId);
     const [volsSnap, chapsSnap] = await Promise.all([
-      adminDb.collection('projects').doc(projectId).collection('volumes').orderBy('order', 'asc').get(),
-      adminDb.collection('projects').doc(projectId).collection('chapters').orderBy('order', 'asc').get(),
+      projectRef.collection('volumes').orderBy('order', 'asc').get(),
+      projectRef.collection('chapters').orderBy('order', 'asc').get(),
     ]);
 
     const volumes = volsSnap.docs.map((d) => ({ id: d.id, ...d.data() }));
@@ -28,16 +29,18 @@ export async function GET(
 
     const structuredVolumes = volumes.map((vol) => ({
       ...vol,
-      chapters: chapters.filter((c: any) => c.volumeId === vol.id),
+      chapters: chapters.filter(
+        (c) => (c as { volumeId?: string }).volumeId === vol.id
+      ),
     }));
 
     return NextResponse.json({
-      projectId,
-      title: projectData?.title,
+      projectId: scoped.projectId,
+      title: scoped.data.title,
       volumes: structuredVolumes,
     });
-  } catch (err: unknown) {
-    const message = err instanceof Error ? err.message : 'Unknown error';
-    return NextResponse.json({ error: message }, { status: 500 });
+  } catch (err) {
+    console.error('AI structure request failed', err);
+    return NextResponse.json({ error: 'Request failed' }, { status: 500 });
   }
 }

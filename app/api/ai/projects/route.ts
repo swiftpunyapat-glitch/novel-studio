@@ -1,13 +1,21 @@
-import { NextRequest, NextResponse } from 'next/server';
-import { validateAiToken } from '@/lib/ai/auth';
+import { NextResponse } from 'next/server';
+import { authenticateAiRequest } from '@/lib/ai/auth';
 import { adminDb } from '@/lib/firebase/admin';
 
-export async function GET(req: NextRequest) {
-  const authError = validateAiToken(req);
-  if (authError) return authError;
+export const dynamic = 'force-dynamic';
+
+export async function GET(req: Request) {
+  const auth = authenticateAiRequest(req);
+  if ('response' in auth) return auth.response;
 
   try {
-    const snapshot = await adminDb.collection('projects').get();
+    // Scoped to the configured owner: a leaked token cannot enumerate
+    // other accounts' manuscripts. (Audit H10)
+    const snapshot = await adminDb
+      .collection('projects')
+      .where('ownerId', '==', auth.principal.ownerUid)
+      .get();
+
     const projects = snapshot.docs.map((doc) => {
       const data = doc.data();
       return {
@@ -22,8 +30,8 @@ export async function GET(req: NextRequest) {
     });
 
     return NextResponse.json({ projects });
-  } catch (err: unknown) {
-    const message = err instanceof Error ? err.message : 'Unknown error';
-    return NextResponse.json({ error: message }, { status: 500 });
+  } catch (err) {
+    console.error('AI projects listing failed', err);
+    return NextResponse.json({ error: 'Request failed' }, { status: 500 });
   }
 }

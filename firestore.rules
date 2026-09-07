@@ -1,34 +1,47 @@
 rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
-    
-    // Helper functions
+
+    // ---------- Helpers ----------
     function isAuthenticated() {
       return request.auth != null;
     }
-    
+
     function isOwner(userId) {
       return isAuthenticated() && request.auth.uid == userId;
     }
-    
-    function isProjectOwner(projectId) {
-      return isAuthenticated() && 
-        request.auth.uid == get(/databases/$(database)/documents/projects/$(projectId)).data.ownerId;
+
+    function projectData(projectId) {
+      return get(/databases/$(database)/documents/projects/$(projectId)).data;
     }
 
-    // 1. User profiles and preferences
+    function isProjectOwner(projectId) {
+      return isAuthenticated() &&
+        exists(/databases/$(database)/documents/projects/$(projectId)) &&
+        request.auth.uid == projectData(projectId).ownerId;
+    }
+
+    // ---------- 1. User profiles and preferences ----------
     match /users/{userId} {
       allow read, write: if isOwner(userId);
-      
+
       match /preferences/{prefId} {
         allow read, write: if isOwner(userId);
       }
     }
 
-    // 2. Private Projects and nested workspace collections
+    // ---------- 2. Private projects and nested workspace ----------
     match /projects/{projectId} {
-      allow create: if isAuthenticated() && request.resource.data.ownerId == request.auth.uid;
-      allow read, update, delete: if isOwner(resource.data.ownerId);
+      allow create: if isAuthenticated()
+        && request.resource.data.ownerId == request.auth.uid;
+
+      allow read, delete: if isOwner(resource.data.ownerId);
+
+      // AUDIT: ownerId is immutable. Previously an update could reassign
+      // ownership, silently transferring a project (and every private draft,
+      // revision and character note under it) to another account.
+      allow update: if isOwner(resource.data.ownerId)
+        && request.resource.data.ownerId == resource.data.ownerId;
 
       match /volumes/{volumeId} {
         allow read, write: if isProjectOwner(projectId);
@@ -40,8 +53,24 @@ service cloud.firestore {
         match /variants/{variantId} {
           allow read, write: if isProjectOwner(projectId);
 
+          // AUDIT C4: revisions are append-only.
+          // The previous `allow read, write` expanded to create + update +
+          // delete, so the "immutable point-in-time snapshot" the editor and
+          // README promised could be rewritten or destroyed by any client.
+          // Publishing trusts a revision as a frozen source, so this is also
+          // what gives published content tamper-evident provenance.
           match /revisions/{revisionId} {
-            allow read, write: if isProjectOwner(projectId);
+            allow get, list: if isProjectOwner(projectId);
+
+            allow create: if isProjectOwner(projectId)
+              && request.resource.data.projectId == projectId
+              && request.resource.data.chapterId == chapterId
+              && request.resource.data.variantId == variantId
+              && request.resource.data.createdBy == request.auth.uid
+              && request.resource.data.revisionNumber is int
+              && request.resource.data.revisionNumber > 0;
+
+            allow update, delete: if false;
           }
         }
       }
@@ -54,15 +83,23 @@ service cloud.firestore {
         }
       }
 
+      // Publishing runs only through the authenticated server route.
       match /publications/{pubId} {
         allow read: if isProjectOwner(projectId);
-        // Direct client writes forbidden; publishing must happen through trusted Server Action
         allow write: if false;
       }
     }
 
-    // 3. Public Reader collections
-    // WORLD READABLE, STRICTLY WRITE PROTECTED (Only Firebase Admin SDK can write)
+    // ---------- 3. Public slug reservations ----------
+    // AUDIT C6: the public namespace is claimed transactionally by the server.
+    // Clients must never be able to squat or reassign a slug.
+    match /publicSlugs/{slug} {
+      allow read: if false;
+      allow write: if false;
+    }
+
+    // ---------- 4. Public reader collections ----------
+    // World readable, strictly write protected (Admin SDK only).
     match /publicProjects/{projectSlug} {
       allow read: if true;
       allow write: if false;

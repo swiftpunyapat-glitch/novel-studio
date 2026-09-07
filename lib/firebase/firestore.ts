@@ -12,7 +12,7 @@ import {
 } from 'firebase/firestore';
 import { db } from './client';
 import { Project, Volume, Chapter, DraftVariant, Revision, DEFAULT_DOCUMENT_SETTINGS } from '@/types/project';
-import { Character, CharacterReference } from '@/types/character';
+import { Character } from '@/types/character';
 
 // ==================== PROJECTS ====================
 export async function createProject(ownerId: string, title: string, description: string = ''): Promise<Project> {

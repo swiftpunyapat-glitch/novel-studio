@@ -1,20 +1,26 @@
-import { NextRequest, NextResponse } from 'next/server';
-import { validateAiToken } from '@/lib/ai/auth';
+import { NextResponse } from 'next/server';
+import { authenticateAiRequest } from '@/lib/ai/auth';
+import { resolveOwnedProject } from '@/lib/ai/scope';
 import { adminDb } from '@/lib/firebase/admin';
 
+export const dynamic = 'force-dynamic';
+
 export async function GET(
-  req: NextRequest,
+  req: Request,
   { params }: { params: { projectId: string } }
 ) {
-  const authError = validateAiToken(req);
-  if (authError) return authError;
-
-  const { projectId } = params;
+  const auth = authenticateAiRequest(req);
+  if ('response' in auth) return auth.response;
 
   try {
+    const scoped = await resolveOwnedProject(auth.principal.ownerUid, params.projectId);
+    if (!scoped) {
+      return NextResponse.json({ error: 'Project not found' }, { status: 404 });
+    }
+
     const snapshot = await adminDb
       .collection('projects')
-      .doc(projectId)
+      .doc(scoped.projectId)
       .collection('characters')
       .orderBy('name', 'asc')
       .get();
@@ -35,9 +41,9 @@ export async function GET(
       };
     });
 
-    return NextResponse.json({ projectId, characters });
-  } catch (err: unknown) {
-    const message = err instanceof Error ? err.message : 'Unknown error';
-    return NextResponse.json({ error: message }, { status: 500 });
+    return NextResponse.json({ projectId: scoped.projectId, characters });
+  } catch (err) {
+    console.error('AI characters request failed', err);
+    return NextResponse.json({ error: 'Request failed' }, { status: 500 });
   }
 }

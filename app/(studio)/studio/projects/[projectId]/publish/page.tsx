@@ -4,6 +4,7 @@ import React, { useEffect, useState, useCallback } from 'react';
 import { useParams } from 'next/navigation';
 import Link from 'next/link';
 import { getProject, getChapters, getVariant, getRevisions } from '@/lib/firebase/firestore';
+import { useAuth } from '@/lib/firebase/auth';
 import { Project, Chapter, DraftVariant, Revision } from '@/types/project';
 import { Send, CheckCircle2, AlertTriangle, ExternalLink, Loader2, Sparkles } from 'lucide-react';
 import { Button } from '@/components/ui/Button';
@@ -17,6 +18,7 @@ interface ChapterPublishItem {
 export default function ProjectPublishPage() {
   const params = useParams();
   const projectId = params?.projectId as string;
+  const { user } = useAuth();
 
   const [project, setProject] = useState<Project | null>(null);
   const [items, setItems] = useState<ChapterPublishItem[]>([]);
@@ -68,11 +70,23 @@ export default function ProjectPublishPage() {
       return;
     }
 
+    if (!user) {
+      alert('Please sign in again before publishing.');
+      return;
+    }
+
     setPublishingId(item.chapter.id);
     try {
+      // The server verifies this token and resolves ownership from it.
+      // Owner identity is never sent in the request body.
+      const idToken = await user.getIdToken();
+
       const res = await fetch('/api/publishing/publish', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${idToken}`,
+        },
         body: JSON.stringify({
           projectId,
           chapterId: item.chapter.id,
@@ -184,7 +198,7 @@ export default function ProjectPublishPage() {
                   <Button
                     size="sm"
                     variant={isPublished ? 'secondary' : 'primary'}
-                    disabled={isPublishing || !latestRevision}
+                    disabled={isPublishing || !latestRevision || !user}
                     onClick={() => handlePublish({ chapter, activeVariant, latestRevision })}
                     className="text-xs"
                   >
