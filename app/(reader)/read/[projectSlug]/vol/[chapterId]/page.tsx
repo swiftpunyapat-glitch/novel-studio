@@ -1,3 +1,4 @@
+import React from 'react';
 import Link from 'next/link';
 import { notFound } from 'next/navigation';
 import { adminDb } from '@/lib/firebase/admin';
@@ -25,6 +26,12 @@ export default async function PublicChapterReaderPage({ params }: PageProps) {
   const project = projectDoc.data();
   const chapter = chapDoc.data();
   const allChapters = allChapsSnap.docs.map((d) => d.data());
+
+  // Presentation only: the symbol the reader stylesheet draws for a scene
+  // break, which the published markup deliberately leaves empty.
+  const rawSymbol = project?.readingSettings?.sceneBreakSymbol;
+  const sceneBreakSymbol =
+    typeof rawSymbol === 'string' && rawSymbol.trim() ? rawSymbol.trim() : '***';
 
   const currentIndex = allChapters.findIndex((c) => c.id === chapterId);
   const prevChapter = currentIndex > 0 ? allChapters[currentIndex - 1] : null;
@@ -67,9 +74,26 @@ export default async function PublicChapterReaderPage({ params }: PageProps) {
           )}
         </div>
 
-        {/* Rendered Prose */}
+        {/*
+          Rendered Prose.
+
+          The metrics live in the stylesheet, not here. This element previously
+          carried `text-[16pt] leading-[1.08]` — the manuscript's A5 print
+          setting — which is why the published book read as densely on a phone
+          as it does on paper. Reader typography is presentation and belongs in
+          one place; see `.novel-reader-prose` in app/globals.css.
+
+          The scene-break symbol is passed as a custom property rather than
+          being part of the published HTML, so changing it in the project
+          settings does not require republishing every chapter to take effect.
+        */}
         <div
-          className="novel-reader-prose text-[16pt] leading-[1.08] font-sarabun space-y-2 text-slate-800 dark:text-slate-200"
+          className="novel-reader-prose"
+          style={
+            {
+              '--reader-scene-break-symbol': JSON.stringify(sceneBreakSymbol),
+            } as React.CSSProperties
+          }
           dangerouslySetInnerHTML={{ __html: chapter?.renderedHtml || '' }}
         />
 

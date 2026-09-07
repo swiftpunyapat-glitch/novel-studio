@@ -24,6 +24,8 @@
   --paper-bg: #ffffff;
   --paper-text: #1a1a1a;
   --paper-shadow: 0 4px 20px -2px rgba(0, 0, 0, 0.08);
+  --reader-text: #1f2937;
+  --reader-muted: #64748b;
 }
 
 .dark {
@@ -32,6 +34,8 @@
   --paper-bg: #1e293b;
   --paper-text: #f1f5f9;
   --paper-shadow: 0 4px 20px -2px rgba(0, 0, 0, 0.4);
+  --reader-text: #e2e8f0;
+  --reader-muted: #94a3b8;
 }
 
 body {
@@ -191,6 +195,110 @@ body {
 .novel-display-spacing .ProseMirror,
 .novel-display-spacing .ProseMirror p {
   line-height: var(--novel-display-line-spacing, 1.4) !important;
+}
+
+/* ---------------------------------------------------------------------------
+   PUBLIC READER TYPOGRAPHY (Stage 4H)
+
+   The reader has its own display metrics, and that is the whole point of this
+   block. The manuscript is set for A5 paper — 16 pt at 1.08 line spacing — which
+   is correct in print and punishing to read on a phone. The reader page
+   previously carried those exact numbers as utility classes, so screen readers
+   of the published book got the typesetter's metrics rather than a reader's.
+
+   PRESENTATION ONLY. Nothing here is stored, nothing is read from
+   documentSettings, and none of it reaches DOCX, a revision snapshot or the
+   manuscript JSON. Because it is a stylesheet and not published data, changing
+   any value below takes effect for every already-published book on the next
+   page load — no republishing.
+
+   Thai is the primary readability target: its vowels and tone marks stack above
+   and below the baseline, so it needs more leading than Latin at the same size.
+   The layout stays a novel rather than an article — first-line indents, no
+   paragraph gaps — because that is what the prose was written as.
+--------------------------------------------------------------------------- */
+.novel-reader-prose {
+  /* Mobile first. Overridden from 768px up. */
+  --reader-font-size: 17.5px;
+  --reader-line-height: 1.68;
+  --reader-indent: 1.5em;
+
+  font-family: 'Sarabun', 'Leelawadee UI', 'Noto Sans Thai', sans-serif;
+  font-size: var(--reader-font-size);
+  line-height: var(--reader-line-height);
+  color: var(--reader-text);
+
+  /* Thai has no inter-word spaces, so the browser's own line breaker must be
+     left to do the work; forcing break-word would split syllables. The
+     overflow guard only engages for something genuinely unbreakable, such as a
+     long URL. */
+  overflow-wrap: break-word;
+}
+
+@media (min-width: 768px) {
+  .novel-reader-prose {
+    --reader-font-size: 19px;
+    --reader-line-height: 1.6;
+  }
+}
+
+/* Indented paragraphs, no gaps between them: the novel convention, and what
+   keeps a scene break legible as a break rather than as one more gap. */
+.novel-reader-prose p {
+  margin: 0;
+  text-indent: var(--reader-indent);
+}
+
+/* Nothing is indented where a new passage begins — the opening line, and the
+   first line after a scene break or scene header. */
+.novel-reader-prose > p:first-child,
+.novel-reader-prose .novel-scene-break + p,
+.novel-reader-prose .novel-scene-header + p,
+.novel-reader-prose p.no-indent {
+  text-indent: 0;
+}
+
+/* Alignment classes emitted by the published-HTML renderer. A line the author
+   centred is not also indented. */
+.novel-reader-prose p.align-left {
+  text-align: left;
+}
+.novel-reader-prose p.align-right {
+  text-align: right;
+}
+.novel-reader-prose p.align-justify {
+  text-align: justify;
+}
+.novel-reader-prose p.align-center {
+  text-align: center;
+  text-indent: 0;
+}
+
+/* Scene break. The published markup is an empty div, so the symbol is drawn
+   here — which also means it follows the project's chosen symbol without the
+   book needing to be republished. */
+.novel-reader-prose .novel-scene-break {
+  margin: 1.8em 0;
+  color: var(--reader-muted);
+}
+
+.novel-reader-prose .novel-scene-break::before {
+  content: var(--reader-scene-break-symbol, '***');
+}
+
+/* Sits directly under its break, so it carries no space above. */
+.novel-reader-prose .novel-scene-header {
+  margin: -1.2em 0 1.8em;
+  font-size: 0.92em;
+  color: var(--reader-muted);
+}
+
+/* A page break is a print instruction. In a continuously scrolling reader it
+   is not a horizontal rule to be looked at — the editor's dashed marker would
+   read as an artefact — so it becomes plain breathing space. */
+.novel-reader-prose .novel-page-break {
+  margin: 2.2em 0;
+  border-top: none;
 }
 
 /* ---------------------------------------------------------------------------

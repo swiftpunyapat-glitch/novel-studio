@@ -417,6 +417,63 @@ describe('Scene header', () => {
 });
 
 // ===========================================================================
+// Published HTML class contract (Stage 4H)
+// ===========================================================================
+
+/**
+ * The reader stylesheet styles this markup by class name, and the two are
+ * deployed independently: a renamed class here would silently strip the
+ * published book of its typography with nothing failing to build.
+ *
+ * These assertions are the contract, not a restatement of the renderer.
+ */
+describe('markup the reader stylesheet depends on', () => {
+  const html = (content: unknown[]) =>
+    renderTiptapToSafeHtml({ content: content as never });
+
+  test('paragraphs are plain <p>, which is what carries the first-line indent', () => {
+    expect(html([{ type: 'paragraph', content: [{ type: 'text', text: 'a' }] }])).toBe(
+      '<p>a</p>'
+    );
+  });
+
+  test('a scene break is an EMPTY div.novel-scene-break', () => {
+    // Empty by design: the reader draws the symbol from CSS, so changing a
+    // project's scene-break symbol does not require republishing the book.
+    const out = html([{ type: 'sceneBreak' }]);
+    expect(out).toContain('class="novel-scene-break"');
+    expect(out).toMatch(/<div[^>]*><\/div>/);
+  });
+
+  test('a scene header keeps its three styled spans', () => {
+    const out = html([
+      { type: 'sceneHeader', attrs: { timeText: '18:30', locationText: 'Bangkok' } },
+    ]);
+    expect(out).toContain('class="novel-scene-header"');
+    expect(out).toContain('class="scene-header-time"');
+    expect(out).toContain('class="scene-header-sep"');
+    expect(out).toContain('class="scene-header-location"');
+  });
+
+  test('a page break is div.novel-page-break, which the reader neutralises', () => {
+    // The editor draws it as a dashed rule; a reader must not see that.
+    expect(html([{ type: 'pageBreak' }])).toContain('class="novel-page-break"');
+  });
+
+  test('legacy indent and alignment classes still reach the reader', () => {
+    // Already-published books carry these, and the reader has rules for them.
+    expect(html([{ type: 'paragraph', attrs: { noIndent: true } }])).toContain(
+      'class="no-indent"'
+    );
+    for (const align of ['left', 'center', 'right', 'justify']) {
+      expect(html([{ type: 'paragraph', attrs: { textAlign: align } }])).toContain(
+        `class="align-${align}"`
+      );
+    }
+  });
+});
+
+// ===========================================================================
 // Page View pagination (Stage 4G)
 // ===========================================================================
 
