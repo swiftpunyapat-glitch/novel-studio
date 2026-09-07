@@ -1,5 +1,6 @@
-import { NextResponse } from 'next/server';
+import type { NextResponse } from 'next/server';
 import { timingSafeEqual } from 'crypto';
+import { aiJson } from '@/lib/ai/serialize';
 
 /**
  * Bearer-token gate for the read-only AI API. (Audit H10)
@@ -56,32 +57,22 @@ export function authenticateAiRequest(
     console.error(
       'NOVEL_AI_READ_TOKEN is missing or too short; AI API is disabled.'
     );
-    return {
-      response: NextResponse.json(
-        { error: 'AI API is not configured' },
-        { status: 503 }
-      ),
-    };
+    return { response: aiJson({ error: 'AI API is not configured' }, 503) };
   }
 
   if (!ownerUid) {
     console.error('NOVEL_OWNER_UID is not set; AI API is disabled.');
-    return {
-      response: NextResponse.json(
-        { error: 'AI API is not configured' },
-        { status: 503 }
-      ),
-    };
+    return { response: aiJson({ error: 'AI API is not configured' }, 503) };
   }
 
   const header = req.headers.get('authorization');
   if (!header || !header.startsWith('Bearer ')) {
-    return { response: NextResponse.json(UNAUTHORIZED, { status: 401 }) };
+    return { response: aiJson(UNAUTHORIZED, 401) };
   }
 
   const provided = header.slice('Bearer '.length).trim();
   if (!provided || !tokensMatch(provided, expectedToken)) {
-    return { response: NextResponse.json(UNAUTHORIZED, { status: 401 }) };
+    return { response: aiJson(UNAUTHORIZED, 401) };
   }
 
   return { principal: { ownerUid } };

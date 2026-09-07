@@ -1,6 +1,6 @@
-import { NextResponse } from 'next/server';
 import { authenticateAiRequest } from '@/lib/ai/auth';
 import { resolveOwnedProject } from '@/lib/ai/scope';
+import { aiJson } from '@/lib/ai/serialize';
 import { adminDb } from '@/lib/firebase/admin';
 
 export const dynamic = 'force-dynamic';
@@ -15,7 +15,7 @@ export async function GET(
   try {
     const scoped = await resolveOwnedProject(auth.principal.ownerUid, params.projectId);
     if (!scoped) {
-      return NextResponse.json({ error: 'Project not found' }, { status: 404 });
+      return aiJson({ error: 'Project not found' }, 404);
     }
 
     const snapshot = await adminDb
@@ -41,9 +41,9 @@ export async function GET(
       };
     });
 
-    return NextResponse.json({ projectId: scoped.projectId, characters });
+    return aiJson({ projectId: scoped.projectId, characters });
   } catch (err) {
     console.error('AI characters request failed', err);
-    return NextResponse.json({ error: 'Request failed' }, { status: 500 });
+    return aiJson({ error: 'Request failed' }, 500);
   }
 }

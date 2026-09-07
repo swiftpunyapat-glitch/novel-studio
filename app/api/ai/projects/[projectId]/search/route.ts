@@ -1,9 +1,22 @@
-import { NextResponse } from 'next/server';
 import { authenticateAiRequest } from '@/lib/ai/auth';
 import { resolveOwnedProject, clampLimit } from '@/lib/ai/scope';
+import { aiJson } from '@/lib/ai/serialize';
 import { adminDb } from '@/lib/firebase/admin';
 
+/**
+ * Read-only: substring search across the active variant of every chapter.
+ *
+ * POST because the query travels in a body, not because anything is written —
+ * no document is created, updated or deleted on this path.
+ */
+
 export const dynamic = 'force-dynamic';
+
+/**
+ * The query is scanned against every chapter's full text, so its length is
+ * bounded: an unbounded one turns a read into an expensive scan.
+ */
+const MAX_QUERY_LENGTH = 200;
 
 interface SearchResult {
   chapterId: string;
@@ -23,19 +36,22 @@ export async function POST(
   try {
     const scoped = await resolveOwnedProject(auth.principal.ownerUid, params.projectId);
     if (!scoped) {
-      return NextResponse.json({ error: 'Project not found' }, { status: 404 });
+      return aiJson({ error: 'Project not found' }, 404);
     }
 
     let body: { query?: unknown; limit?: unknown };
     try {
       body = await req.json();
     } catch {
-      return NextResponse.json({ error: 'Malformed request body' }, { status: 400 });
+      return aiJson({ error: 'Malformed request body' }, 400);
     }
 
     const queryStr = typeof body.query === 'string' ? body.query.trim() : '';
     if (!queryStr) {
-      return NextResponse.json({ error: 'Missing search query' }, { status: 400 });
+      return aiJson({ error: 'Missing search query' }, 400);
+    }
+    if (queryStr.length > MAX_QUERY_LENGTH) {
+      return aiJson({ error: 'Search query is too long' }, 400);
     }
     const limitCount = clampLimit(body.limit);
 
@@ -88,8 +104,10 @@ export async function POST(
 
         results.push({
           chapterId: chapter.id,
-          chapterTitle: chapter.data.title,
-          volumeTitle: volumeMap.get(chapter.data.volumeId) || 'Unknown Volume',
+          // Named and coerced rather than passed through, like every other
+          // field this API returns. (lib/ai/serialize.ts)
+          chapterTitle: typeof chapter.data.title === 'string' ? chapter.data.title : '',
+          volumeTitle: volumeMap.get(String(chapter.data.volumeId ?? '')) || 'Unknown Volume',
           snippet,
           matchIndex: startIndex,
         });
@@ -99,13 +117,13 @@ export async function POST(
       }
     }
 
-    return NextResponse.json({
+    return aiJson({
       query: queryStr,
       totalMatches: results.length,
       results,
     });
   } catch (err) {
     console.error('AI search request failed', err);
-    return NextResponse.json({ error: 'Request failed' }, { status: 500 });
+    return aiJson({ error: 'Request failed' }, 500);
   }
 }
