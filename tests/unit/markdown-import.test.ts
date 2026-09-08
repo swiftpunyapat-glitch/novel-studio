@@ -8,6 +8,7 @@ import {
   type ManuscriptNode,
 } from '@/lib/editor/markdown-import';
 import { getSchema } from '@tiptap/core';
+import { SUPPORTED_NODE_TYPES } from '@/lib/editor/manuscript-schema';
 import { Node as PMNode } from '@tiptap/pm/model';
 import StarterKit from '@tiptap/starter-kit';
 import Underline from '@tiptap/extension-underline';
@@ -83,6 +84,12 @@ describe('everything produced is inside the manuscript schema', () => {
     '',
     'บรรทัดสุดท้าย  ',
     'หลังจากขึ้นบรรทัดใหม่',
+    '',
+    '> 18:30 — ลาดพร้าว 101',
+    '',
+    '<!-- PAGE BREAK -->',
+    '',
+    'หน้าใหม่',
   ].join('\n');
 
   function walk(node: ManuscriptNode, visit: (n: ManuscriptNode) => void) {
@@ -542,5 +549,137 @@ describe('a chapter draft written in Markdown', () => {
 
   test('carriage returns from a Windows file make no difference', () => {
     expect(parse(DRAFT.replace(/\n/g, '\r\n')).content).toEqual(parse(DRAFT).content);
+  });
+});
+
+describe('Round trip with this application\'s own Markdown export', () => {
+  // The exporter writes a page break as an HTML comment and a scene header as
+  // a one-line blockquote. Before this, both came back as visible prose.
+
+  test('the page-break marker becomes a real page break node', () => {
+    const out = blocks('before\n\n<!-- PAGE BREAK -->\n\nafter');
+    expect(out.map((n) => n.type)).toEqual(['paragraph', 'pageBreak', 'paragraph']);
+    expect(parse('<!-- PAGE BREAK -->').stats.pageBreaks).toBe(1);
+  });
+
+  test('the marker is never left as text', () => {
+    const out = blocks('a\n\n<!-- PAGE BREAK -->\n\nb');
+    expect(out.map(textOf).join(' ')).not.toContain('PAGE BREAK');
+  });
+
+  test('marker matching tolerates spacing and case', () => {
+    for (const marker of ['<!-- PAGE BREAK -->', '<!--PAGE BREAK-->', '<!--  page break  -->']) {
+      expect(blocks(marker).map((n) => n.type)).toContain('pageBreak');
+    }
+  });
+
+  test('any other HTML comment is removed, not shown', () => {
+    const result = parse('a\n\n<!-- an editor note -->\n\nb');
+    expect(result.content.content.map(textOf).join(' ')).not.toContain('editor note');
+    expect(result.stats.htmlCommentsDropped).toBe(1);
+  });
+
+  test('a comment inside a line of prose is stripped, the prose kept', () => {
+    const out = blocks('the road <!-- check this --> went on');
+    expect(textOf(out[0])).toBe('the road  went on');
+    expect(parse('x <!-- c --> y').stats.htmlCommentsDropped).toBe(1);
+  });
+
+  test('a comment spanning several lines is removed whole', () => {
+    const result = parse('a\n\n<!--\nnote line one\nnote line two\n-->\n\nb');
+    const text = result.content.content.map(textOf).join(' ');
+    expect(text).not.toContain('note line');
+    expect(text).toContain('a');
+    expect(text).toContain('b');
+  });
+
+  test('an unterminated comment stays as prose rather than eating the file', () => {
+    const result = parse('a\n\n<!-- never closed\n\nb');
+    const text = result.content.content.map(textOf).join(' ');
+    expect(text).toContain('b');
+  });
+
+  test('a scene header blockquote becomes a sceneHeader node', () => {
+    const out = blocks('> 18:30 — Bangkok');
+    expect(out).toHaveLength(1);
+    expect(out[0].type).toBe('sceneHeader');
+    expect(out[0].attrs).toEqual({ timeText: '18:30', locationText: 'Bangkok' });
+  });
+
+  test('Thai locations survive in a scene header', () => {
+    const out = blocks('> 18:30 — ลาดพร้าว 101');
+    expect(out[0].attrs).toEqual({ timeText: '18:30', locationText: 'ลาดพร้าว 101' });
+  });
+
+  test('a bare clock time is a scene header', () => {
+    const out = blocks('> 09:00');
+    expect(out[0].type).toBe('sceneHeader');
+    expect(out[0].attrs).toEqual({ timeText: '09:00', locationText: null });
+  });
+
+  test('an ordinary one-line quote stays a paragraph', () => {
+    const out = blocks('> He said it would rain.');
+    expect(out[0].type).toBe('paragraph');
+    expect(textOf(out[0])).toBe('He said it would rain.');
+  });
+
+  test('a multi-line quote stays prose even if its first line looks like a header', () => {
+    const out = blocks('> 18:30 — Bangkok\n> and then it rained');
+    expect(out.every((n) => n.type !== 'sceneHeader')).toBe(true);
+  });
+
+  test('a quote continuing a paragraph is not a scene header', () => {
+    const out = blocks('prose line\n> 18:30 — Bangkok');
+    expect(out.every((n) => n.type !== 'sceneHeader')).toBe(true);
+  });
+
+  test('scene break then scene header keeps both, in order', () => {
+    const out = blocks('a\n\n***\n\n> 18:30 — Bangkok\n\nb');
+    expect(out.map((n) => n.type)).toEqual([
+      'paragraph',
+      'sceneBreak',
+      'sceneHeader',
+      'paragraph',
+    ]);
+  });
+
+  test('a full exported chapter round-trips its breaks and headers', () => {
+    const exported = [
+      '# REDLINE LOVE',
+      '',
+      '## Volume 1 — Bangkok Nights',
+      '',
+      '### Chapter 1 — Redline',
+      '',
+      'เธอหยุดอยู่ตรงนั้น',
+      '',
+      '***',
+      '',
+      '> 18:30 — ลาดพร้าว 101',
+      '',
+      'after the header',
+      '',
+      '<!-- PAGE BREAK -->',
+      '',
+      'new page',
+      '',
+    ].join('\n');
+
+    const result = parse(exported);
+    const types = result.content.content.map((n) => n.type);
+
+    expect(types).toContain('sceneBreak');
+    expect(types).toContain('sceneHeader');
+    expect(types).toContain('pageBreak');
+    expect(result.content.content.map(textOf).join(' ')).not.toContain('PAGE BREAK');
+    expect(result.stats.sceneHeaders).toBe(1);
+    expect(result.stats.pageBreaks).toBe(1);
+  });
+
+  test('every emitted node type is one the manuscript schema allows', () => {
+    const out = blocks('a\n\n***\n\n> 18:30 — B\n\n<!-- PAGE BREAK -->\n\nb');
+    for (const node of out) {
+      expect(SUPPORTED_NODE_TYPES).toContain(node.type);
+    }
   });
 });

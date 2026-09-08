@@ -37,10 +37,20 @@
  */
 
 import { extractPlainTextFromTiptap, calculateWordCount } from '@/lib/editor/plain-text';
+import {
+  SCENE_HEADER_SEPARATOR,
+  normalizeSceneHeaderField,
+} from '@/lib/editor/scene-header';
 
 export interface MarkdownImportStats {
   paragraphs: number;
   sceneBreaks: number;
+  /** Quoted lines recovered as scene header nodes rather than prose. */
+  sceneHeaders: number;
+  /** `<!-- PAGE BREAK -->` markers recovered as real page breaks. */
+  pageBreaks: number;
+  /** HTML comments removed instead of being shown as text. */
+  htmlCommentsDropped: number;
   /** Headings flattened into centred bold paragraphs. */
   headings: number;
   listItems: number;
@@ -79,6 +89,9 @@ function emptyStats(): MarkdownImportStats {
   return {
     paragraphs: 0,
     sceneBreaks: 0,
+    sceneHeaders: 0,
+    pageBreaks: 0,
+    htmlCommentsDropped: 0,
     headings: 0,
     listItems: 0,
     blockquoteLines: 0,
@@ -277,6 +290,56 @@ const UNORDERED_ITEM = /^\s*[-*+]\s+(.*)$/;
 const ORDERED_ITEM = /^\s*(\d{1,9})[.)]\s+(.*)$/;
 const BLOCKQUOTE = /^\s{0,3}>\s?(.*)$/;
 const CODE_FENCE = /^\s*(```|~~~)/;
+
+/**
+ * Round-tripping this application's own Markdown export. (Stage 6A follow-up)
+ *
+ * `lib/markdown/generator.ts` writes a page break as an HTML comment and a
+ * scene header as a one-line blockquote. Without the three patterns below, a
+ * chapter exported and then re-imported came back with the literal text
+ * "<!-- PAGE BREAK -->" in the prose and its scene headers flattened to
+ * ordinary paragraphs — and the marker would then be exported into the DOCX.
+ */
+
+/** A whole line that is nothing but an HTML comment. */
+const HTML_COMMENT_LINE = /^\s*<!--([\s\S]*?)-->\s*$/;
+/** The opening of a comment that continues on later lines. */
+const HTML_COMMENT_OPEN = /^\s*<!--/;
+/** An HTML comment appearing inside a line of prose. */
+const HTML_COMMENT_INLINE = /<!--[\s\S]*?-->/g;
+/** The page-break marker the exporter emits, whitespace- and case-tolerant. */
+const PAGE_BREAK_COMMENT = /^\s*page\s*break\s*$/i;
+/** A bare clock time, the one unambiguous single-field scene header. */
+const TIME_ONLY = /^\d{1,2}[:.]\d{2}$/;
+
+/**
+ * Reads a one-line blockquote as a scene header, or returns null.
+ *
+ * Deliberately narrow, because a novel legitimately contains one-line quotes.
+ * Only two shapes are claimed: the exporter's own "time — location" join, and a
+ * line that is nothing but a clock time. Anything else stays a paragraph, which
+ * is the safe direction to be wrong in.
+ */
+function readSceneHeader(
+  text: string
+): { timeText: string | null; locationText: string | null } | null {
+  const trimmed = text.trim();
+  if (!trimmed) return null;
+
+  const parts = trimmed.split(SCENE_HEADER_SEPARATOR);
+  if (parts.length === 2) {
+    const timeText = normalizeSceneHeaderField(parts[0]);
+    const locationText = normalizeSceneHeaderField(parts[1]);
+    if (timeText || locationText) return { timeText, locationText };
+    return null;
+  }
+
+  if (TIME_ONLY.test(trimmed)) {
+    return { timeText: trimmed, locationText: null };
+  }
+
+  return null;
+}
 /** Two or more trailing spaces, or a trailing backslash: an explicit break. */
 const HARD_BREAK_SUFFIX = /(\s{2,}|\\)$/;
 
@@ -385,6 +448,37 @@ export function parseMarkdownToManuscript(markdown: string): MarkdownImportResul
       continue;
     }
 
+    // ---- HTML comments -----------------------------------------------------
+    // Checked before everything except code fences, so a comment is never
+    // shown as prose. The exporter's page-break marker is recovered as a real
+    // page break; any other comment is an editor's private note and is removed.
+    const commentLine = HTML_COMMENT_LINE.exec(line);
+    if (commentLine) {
+      flush();
+      if (PAGE_BREAK_COMMENT.test(commentLine[1])) {
+        blocks.push({ type: 'pageBreak' });
+        stats.pageBreaks += 1;
+      } else {
+        stats.htmlCommentsDropped += 1;
+      }
+      continue;
+    }
+
+    // A comment spanning several lines: skip to its close.
+    if (HTML_COMMENT_OPEN.test(line) && !line.includes('-->')) {
+      flush();
+      const start = i;
+      while (i < lines.length && !lines[i].includes('-->')) i += 1;
+      // An unterminated comment is malformed; treat it as prose rather than
+      // swallowing the rest of the file.
+      if (i >= lines.length) {
+        i = start;
+      } else {
+        stats.htmlCommentsDropped += 1;
+        continue;
+      }
+    }
+
     if (!line.trim()) {
       flush();
       continue;
@@ -426,14 +520,37 @@ export function parseMarkdownToManuscript(markdown: string): MarkdownImportResul
 
     const quote = BLOCKQUOTE.exec(line);
     if (quote) {
+      // A scene header is a blockquote standing on its own: nothing buffered
+      // before it, and no quoted line after it. A multi-line quote is prose.
+      const standalone = pending.length === 0 && !BLOCKQUOTE.test(lines[i + 1] ?? '');
+      const header = standalone ? readSceneHeader(quote[1]) : null;
+
+      if (header) {
+        blocks.push({ type: 'sceneHeader', attrs: header });
+        stats.sceneHeaders += 1;
+        continue;
+      }
+
       stats.blockquoteLines += 1;
       pending.push({ text: quote[1], hard: HARD_BREAK_SUFFIX.test(quote[1]) });
       continue;
     }
 
+    // Strip a comment embedded in a line of prose; the surrounding text stays.
+    let text = line;
+    if (HTML_COMMENT_INLINE.test(text)) {
+      HTML_COMMENT_INLINE.lastIndex = 0;
+      text = text.replace(HTML_COMMENT_INLINE, '');
+      stats.htmlCommentsDropped += 1;
+      if (!text.trim()) {
+        flush();
+        continue;
+      }
+    }
+
     pending.push({
-      text: line.replace(HARD_BREAK_SUFFIX, ''),
-      hard: HARD_BREAK_SUFFIX.test(line),
+      text: text.replace(HARD_BREAK_SUFFIX, ''),
+      hard: HARD_BREAK_SUFFIX.test(text),
     });
   }
 
@@ -484,6 +601,13 @@ export function describeLossyConversions(stats: MarkdownImportStats): string[] {
   }
   if (stats.links > 0) {
     notes.push(`${stats.links} link${stats.links === 1 ? '' : 's'} → text with the address in brackets`);
+  }
+  if (stats.htmlCommentsDropped > 0) {
+    notes.push(
+      `${stats.htmlCommentsDropped} HTML comment${
+        stats.htmlCommentsDropped === 1 ? '' : 's'
+      } removed`
+    );
   }
   if (stats.frontMatterStripped) {
     notes.push('front matter removed');
