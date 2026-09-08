@@ -27,6 +27,7 @@ import {
   Save,
   BookOpen,
   ScrollText,
+  FileUp,
 } from 'lucide-react';
 import type { AutosaveStatus } from '@/types/editor';
 import type { DocumentSettings } from '@/types/project';
@@ -47,6 +48,7 @@ interface FormattingToolbarProps {
   settings: DocumentSettings;
   onOpenParagraphSettings: () => void;
   onOpenSceneBreak: () => void;
+  onOpenImportMarkdown: () => void;
   onOpenFindReplace?: () => void;
   onSave?: () => void;
 
@@ -79,6 +81,7 @@ export const FormattingToolbar: React.FC<FormattingToolbarProps> = ({
   settings,
   onOpenParagraphSettings,
   onOpenSceneBreak,
+  onOpenImportMarkdown,
   onOpenFindReplace,
   onSave,
   viewMode,
@@ -279,6 +282,15 @@ export const FormattingToolbar: React.FC<FormattingToolbarProps> = ({
           className="px-2 py-1 text-xs font-semibold text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 rounded border border-slate-200 dark:border-slate-700 flex items-center gap-1 transition-colors shrink-0"
         >
           <Scissors className="w-3.5 h-3.5 text-blue-500" /> Page
+        </button>
+
+        <button
+          onClick={onOpenImportMarkdown}
+          title="Import a Markdown file into this chapter"
+          aria-label="Import Markdown"
+          className={btn}
+        >
+          <FileUp className="w-4 h-4" />
         </button>
 
         {onOpenFindReplace && (

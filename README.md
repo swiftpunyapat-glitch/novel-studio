@@ -8,6 +8,7 @@ A dedicated, production-usable novel-writing application for authors, featuring 
 - **Draft Variants & Revisions**: Work on alternate branches (Draft A, Draft B) and create immutable revision checkpoints.
 - **Strict Snapshot Publishing**: Public readers at `/read/[projectSlug]` access pre-rendered, sanitized snapshots with zero risk of draft or note leaks.
 - **DOCX Export**: Real OOXML `.docx` files that open natively in Microsoft Word and Google Docs.
+- **Markdown Import**: Bring a `.md` draft into the open chapter. Markdown block types the manuscript schema does not have — headings, lists, quotes, code — are converted, and every conversion is shown before the import is accepted. It arrives as an ordinary edit: undoable, and unsaved until you press Save.
 - **Character Dossier**: Rich character profiles and private image gallery backed by Firebase Storage.
 - **AI Read API**: Token-guarded server-side read-only endpoints (`/api/ai/*`) for Claude, ChatGPT, and MCP servers.
 

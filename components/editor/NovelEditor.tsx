@@ -55,6 +55,7 @@ import { PAGE_VIEW_GAP_PX } from '@/lib/editor/pagination';
 import { normalizeManuscriptDoc } from '@/lib/format/normalize';
 import type { ParagraphOverrides } from '@/lib/format/effective';
 import type { SceneHeaderAttrs } from '@/lib/editor/scene-header';
+import type { MarkdownImportResult } from '@/lib/editor/markdown-import';
 import {
   decideSelectAll,
   isNativeTextField,
@@ -77,6 +78,7 @@ import { ConflictDialog } from './ConflictDialog';
 import { RecoveryDialog } from './RecoveryDialog';
 import { ParagraphSettingsDialog } from './ParagraphSettingsDialog';
 import { SceneBreakDialog } from './SceneBreakDialog';
+import { ImportMarkdownDialog, type ImportMode } from './ImportMarkdownDialog';
 
 /** Imperative surface the page uses so Checkpoint reads LIVE editor state. */
 export interface NovelEditorHandle {
@@ -123,6 +125,7 @@ export const NovelEditor = forwardRef<NovelEditorHandle, NovelEditorProps>(funct
     mode: 'insert' | 'edit';
     initial: Partial<SceneHeaderAttrs> | null;
   } | null>(null);
+  const [importOpen, setImportOpen] = useState(false);
 
   // Presentation state. Deliberately NOT part of the manuscript or of the
   // project's documentSettings — see lib/editor/display-preferences.ts.
@@ -390,6 +393,33 @@ export const NovelEditor = forwardRef<NovelEditorHandle, NovelEditorProps>(funct
   );
 
   /**
+   * Applies an imported Markdown file to the chapter. (Stage 6A)
+   *
+   * An ordinary edit, on purpose: `setContent` and `insertContentAt` both emit
+   * an update, so the SaveCoordinator marks the chapter dirty and the author
+   * presses Save as they would after typing. Undo works too. Writing straight
+   * to Firestore here would make an import the one irreversible action in an
+   * application built entirely on manual save.
+   */
+  const handleImportMarkdown = useCallback(
+    (result: MarkdownImportResult, mode: ImportMode) => {
+      const ed = editorRef.current;
+      setImportOpen(false);
+      if (!ed) return;
+
+      if (mode === 'replace') {
+        ed.commands.setContent(result.content as never, true);
+      } else {
+        ed.chain()
+          .focus()
+          .insertContentAt(ed.state.doc.content.size, result.content.content as never)
+          .run();
+      }
+    },
+    []
+  );
+
+  /**
    * Ctrl/Cmd+A inside the writing pane, but outside the editor itself.
    *
    * Scoped to this region rather than to `document`, so the sidebar, dialogs
@@ -530,6 +560,7 @@ export const NovelEditor = forwardRef<NovelEditorHandle, NovelEditorProps>(funct
         settings={documentSettings}
         onOpenParagraphSettings={() => setParagraphDialogOpen(true)}
         onOpenSceneBreak={handleOpenSceneBreak}
+        onOpenImportMarkdown={() => setImportOpen(true)}
         onSave={handleManualSave}
         viewMode={viewMode}
         onViewModeChange={handleViewModeChange}
@@ -569,6 +600,14 @@ export const NovelEditor = forwardRef<NovelEditorHandle, NovelEditorProps>(funct
           onRestoreLocal={handleRestoreLocal}
           onUseRemote={handleUseRemote}
           onPreserveAsVariant={handlePreserveRecoveryAsVariant}
+        />
+      )}
+
+      {importOpen && (
+        <ImportMarkdownDialog
+          chapterHasContent={(editorRef.current?.getText().trim().length ?? 0) > 0}
+          onImport={handleImportMarkdown}
+          onClose={() => setImportOpen(false)}
         />
       )}
 
