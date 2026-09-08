@@ -55,7 +55,10 @@ import { PAGE_VIEW_GAP_PX } from '@/lib/editor/pagination';
 import { normalizeManuscriptDoc } from '@/lib/format/normalize';
 import type { ParagraphOverrides } from '@/lib/format/effective';
 import type { SceneHeaderAttrs } from '@/lib/editor/scene-header';
-import type { MarkdownImportResult } from '@/lib/editor/markdown-import';
+import {
+  estimateStoredBytes,
+  type MarkdownImportResult,
+} from '@/lib/editor/markdown-import';
 import {
   decideSelectAll,
   isNativeTextField,
@@ -606,6 +609,16 @@ export const NovelEditor = forwardRef<NovelEditorHandle, NovelEditorProps>(funct
       {importOpen && (
         <ImportMarkdownDialog
           chapterHasContent={(editorRef.current?.getText().trim().length ?? 0) > 0}
+          // What the chapter already occupies, so appending is measured against
+          // the room actually left in the document rather than the whole limit.
+          existingStoredBytes={
+            editorRef.current
+              ? estimateStoredBytes(
+                  editorRef.current.getJSON() as never,
+                  editorRef.current.getText()
+                )
+              : 0
+          }
           onImport={handleImportMarkdown}
           onClose={() => setImportOpen(false)}
         />

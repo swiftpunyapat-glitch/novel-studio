@@ -2,6 +2,10 @@ import { describe, expect, test } from 'vitest';
 
 import {
   asTiptapDoc,
+  checkStoredSize,
+  estimateStoredBytes,
+  FIRESTORE_DOCUMENT_LIMIT_BYTES,
+  MAX_STORED_CONTENT_BYTES,
   describeLossyConversions,
   needsJoiningSpace,
   parseMarkdownToManuscript,
@@ -681,5 +685,78 @@ describe('Round trip with this application\'s own Markdown export', () => {
     for (const node of out) {
       expect(SUPPORTED_NODE_TYPES).toContain(node.type);
     }
+  });
+});
+
+describe('A chapter must fit in one Firestore document', () => {
+  // The real limit on an import is not the .md file size but the variant
+  // document it is saved into: Firestore caps a document at 1 MiB, and the
+  // stored form is the Tiptap JSON plus a full plain-text copy.
+
+  const bodyLine = 'เธอหยุดอยู่ตรงนั้น แล้วมองย้อนกลับไปยังถนนที่เพิ่งผ่านมา';
+  const md = (n: number) => Array.from({ length: n }, () => bodyLine).join('\n\n');
+
+  test('the budget leaves headroom under the hard Firestore limit', () => {
+    expect(FIRESTORE_DOCUMENT_LIMIT_BYTES).toBe(1024 * 1024);
+    expect(MAX_STORED_CONTENT_BYTES).toBeLessThan(FIRESTORE_DOCUMENT_LIMIT_BYTES);
+  });
+
+  test('the stored form is measured, not the source file', () => {
+    const source = md(200);
+    const result = parse(source);
+    const stored = estimateStoredBytes(result.content, result.plainText);
+    // Storing JSON plus a plain-text copy always costs more than the source.
+    expect(stored).toBeGreaterThan(Buffer.byteLength(source, 'utf8'));
+  });
+
+  test('an ordinary chapter fits comfortably', () => {
+    const result = parse(md(200));
+    expect(checkStoredSize(result.content, result.plainText).fits).toBe(true);
+  });
+
+  test('an oversized import does not fit', () => {
+    const result = parse(md(6000));
+    const check = checkStoredSize(result.content, result.plainText);
+    expect(check.fits).toBe(false);
+    expect(check.bytes).toBeGreaterThan(check.limit);
+  });
+
+  test('appending counts what the chapter already holds', () => {
+    const result = parse(md(200));
+    const alone = checkStoredSize(result.content, result.plainText);
+    expect(alone.fits).toBe(true);
+
+    // The same import on top of an almost-full chapter no longer fits.
+    const nearlyFull = MAX_STORED_CONTENT_BYTES - 1000;
+    expect(checkStoredSize(result.content, result.plainText, nearlyFull).fits).toBe(false);
+  });
+
+  test('replacing ignores the existing content', () => {
+    const result = parse(md(200));
+    // existingBytes defaults to 0, which is what Replace passes.
+    expect(checkStoredSize(result.content, result.plainText, 0).fits).toBe(true);
+  });
+
+  test('the reported size includes the existing content', () => {
+    const result = parse(md(50));
+    const withoutExisting = checkStoredSize(result.content, result.plainText).bytes;
+    const withExisting = checkStoredSize(result.content, result.plainText, 5000).bytes;
+    expect(withExisting).toBe(withoutExisting + 5000);
+  });
+
+  test('an empty import measures something small but non-zero', () => {
+    const result = parse('');
+    const bytes = estimateStoredBytes(result.content, result.plainText);
+    expect(bytes).toBeGreaterThan(0);
+    expect(bytes).toBeLessThan(1000);
+  });
+
+  test('Thai is measured in UTF-8 bytes, not characters', () => {
+    const thai = parse('ก'.repeat(1000));
+    const latin = parse('a'.repeat(1000));
+    // Thai is three bytes per character in UTF-8, so it must measure larger.
+    expect(estimateStoredBytes(thai.content, thai.plainText)).toBeGreaterThan(
+      estimateStoredBytes(latin.content, latin.plainText)
+    );
   });
 });

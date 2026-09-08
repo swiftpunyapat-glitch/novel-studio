@@ -573,6 +573,65 @@ export function parseMarkdownToManuscript(markdown: string): MarkdownImportResul
   return { content, plainText, stats };
 }
 
+// ---------------------------------------------------------------------------
+// Size
+// ---------------------------------------------------------------------------
+
+/**
+ * Firestore's hard ceiling for one document: 1 MiB.
+ *
+ * The manuscript for a chapter lives in a single variant document, so this is
+ * the real limit on an import — not the size of the `.md` file. The two are not
+ * proportional: the stored form is the Tiptap JSON *and* a full plain-text copy,
+ * and the JSON's per-paragraph overhead means a file of short lines expands far
+ * more than one of long ones. Measured on ordinary prose the factor is roughly
+ * 2.3x for Thai and 2.7x for English, and higher for dialogue.
+ *
+ * So the check below measures the parsed result rather than guessing from the
+ * file, which is the only way to be accurate for both.
+ */
+export const FIRESTORE_DOCUMENT_LIMIT_BYTES = 1024 * 1024;
+
+/**
+ * What content and plainText may occupy. The remainder covers the variant's
+ * own fields — ids, name, status, counts, timestamps — plus Firestore's
+ * per-field overhead, which its size accounting includes and this does not.
+ */
+export const MAX_STORED_CONTENT_BYTES = 900 * 1024;
+
+/**
+ * Bytes this document would occupy in the variant it is saved to.
+ *
+ * Firestore's own accounting is more elaborate; this deliberately errs high by
+ * measuring the serialized JSON, so a document that passes here is comfortably
+ * inside the real limit rather than at its edge.
+ */
+export function estimateStoredBytes(doc: ManuscriptDoc, plainText: string): number {
+  const payload = JSON.stringify({ content: doc, plainText });
+  return typeof Buffer !== 'undefined'
+    ? Buffer.byteLength(payload, 'utf8')
+    : new TextEncoder().encode(payload).length;
+}
+
+export interface StoredSizeCheck {
+  bytes: number;
+  limit: number;
+  fits: boolean;
+}
+
+/**
+ * Whether an import can actually be saved, counting whatever the chapter
+ * already holds when the author is appending rather than replacing.
+ */
+export function checkStoredSize(
+  doc: ManuscriptDoc,
+  plainText: string,
+  existingBytes = 0
+): StoredSizeCheck {
+  const bytes = estimateStoredBytes(doc, plainText) + existingBytes;
+  return { bytes, limit: MAX_STORED_CONTENT_BYTES, fits: bytes <= MAX_STORED_CONTENT_BYTES };
+}
+
 /**
  * The conversions that lose something, for the dialog to show before the author
  * accepts the import. An empty list means nothing was reinterpreted.
