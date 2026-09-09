@@ -7,6 +7,8 @@ import {
 } from '@/lib/server/auth';
 import { renderTiptapToSafeHtml, renderTiptapToPlainText } from '@/lib/publishing/render';
 import { makeSlug, slugCandidates } from '@/lib/publishing/slug';
+import { chapterPath, resolveChapterSlug } from '@/lib/publishing/chapter-slug';
+import { resolveChapterType } from '@/types/project';
 import { DEFAULT_DOCUMENT_SETTINGS } from '@/types/project';
 
 /**
@@ -141,6 +143,30 @@ export async function POST(req: Request) {
       typeof projectData.title === 'string' ? projectData.title : ''
     );
 
+    // ---- 5. Give the chapter a stable public address, once. ----
+    // Every other chapter's slug is read so a collision gets a suffix rather
+    // than two chapters claiming the same URL.
+    const siblingsSnap = await projectRef.collection('chapters').select('slug').get();
+    const takenSlugs = siblingsSnap.docs
+      .filter((d) => d.id !== chapterId)
+      .map((d) => d.data().slug)
+      .filter((v): v is string => typeof v === 'string' && v.length > 0);
+
+    const { slug: chapterSlug, isNew: chapterSlugIsNew } = resolveChapterSlug(
+      {
+        slug: chapterData.slug,
+        title: chapterData.title,
+        chapterNumber: chapterData.chapterNumber,
+        chapterType: resolveChapterType(chapterData as { chapterType?: never }),
+      },
+      takenSlugs
+    );
+
+    const volumeSlug =
+      (typeof volumeData?.slug === 'string' && volumeData.slug) ||
+      makeSlug(String(volumeData?.title ?? '')) ||
+      'volume';
+
     const now = Date.now();
     const publicProjRef = adminDb.collection('publicProjects').doc(projectSlug);
 
@@ -188,6 +214,11 @@ export async function POST(req: Request) {
     batch.set(publicProjRef.collection('chapters').doc(chapterId), {
       id: chapterId,
       volumeId: chapterData.volumeId ?? null,
+      slug: chapterSlug,
+      volumeSlug,
+      // Carried so the reader can label a prologue or epilogue as one instead
+      // of showing it as a chapter with no number.
+      chapterType: resolveChapterType(chapterData as { chapterType?: never }),
       chapterNumber: chapterData.chapterNumber ?? null,
       title: chapterData.title ?? '',
       subtitle: chapterData.subtitle ?? null,
@@ -222,6 +253,8 @@ export async function POST(req: Request) {
 
     batch.update(chapterRef, {
       publishedRevisionId: revisionId,
+      // Written only the first time, so a later rename cannot move the URL.
+      ...(chapterSlugIsNew ? { slug: chapterSlug } : {}),
       updatedAt: now,
     });
 
@@ -231,7 +264,9 @@ export async function POST(req: Request) {
       success: true,
       publishedAt: now,
       slug: projectSlug,
-      publicUrl: `/read/${projectSlug}`,
+      chapterSlug,
+      volumeSlug,
+      publicUrl: chapterPath(projectSlug, volumeSlug, chapterSlug),
     });
   } catch (err) {
     if (err instanceof AuthError) {

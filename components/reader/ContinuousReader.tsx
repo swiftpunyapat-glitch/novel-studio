@@ -3,6 +3,7 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import Link from 'next/link';
 import { ChevronLeft, Loader2, RotateCw } from 'lucide-react';
+import { chapterPath } from '@/lib/publishing/chapter-slug';
 
 /**
  * Continuous reading. (Reader)
@@ -28,6 +29,10 @@ import { ChevronLeft, Loader2, RotateCw } from 'lucide-react';
 
 export interface ReaderChapter {
   id: string;
+  /** Public address parts, so the URL never shows a document id. */
+  slug: string;
+  volumeSlug: string;
+  chapterType: 'prologue' | 'chapter' | 'epilogue';
   chapterNumber: number | null;
   title: string;
   subtitle?: string | null;
@@ -43,6 +48,17 @@ interface ContinuousReaderProps {
   /** False when the starting chapter is the last published one. */
   hasMoreInitially: boolean;
   sceneBreakSymbol: string;
+}
+
+/** The small line above a chapter title: PROLOGUE, CHAPTER 5, EPILOGUE. */
+export function chapterEyebrow(chapter: {
+  chapterType?: ReaderChapter['chapterType'];
+  chapterNumber?: number | null;
+}): string | null {
+  if (chapter.chapterType === 'prologue') return 'PROLOGUE';
+  if (chapter.chapterType === 'epilogue') return 'EPILOGUE';
+  if (chapter.chapterNumber === null || chapter.chapterNumber === undefined) return null;
+  return `CHAPTER ${chapter.chapterNumber}`;
 }
 
 export const ContinuousReader: React.FC<ContinuousReaderProps> = ({
@@ -109,16 +125,18 @@ export const ContinuousReader: React.FC<ContinuousReaderProps> = ({
 
     // The chapter occupying the middle of the screen is the one being read.
     const midpoint = window.innerHeight / 2;
-    let currentId = sections[0].dataset.chapterId;
+    let current = sections[0];
     for (const section of sections) {
-      if (section.getBoundingClientRect().top <= midpoint) {
-        currentId = section.dataset.chapterId;
-      }
+      if (section.getBoundingClientRect().top <= midpoint) current = section;
     }
 
-    if (!currentId || currentId === addressChapterRef.current) return;
-    addressChapterRef.current = currentId;
-    window.history.replaceState(null, '', `/read/${projectSlug}/vol/${currentId}`);
+    const id = current.dataset.chapterId;
+    const slug = current.dataset.chapterSlug;
+    const volumeSlug = current.dataset.volumeSlug;
+    if (!id || !slug || !volumeSlug || id === addressChapterRef.current) return;
+
+    addressChapterRef.current = id;
+    window.history.replaceState(null, '', chapterPath(projectSlug, volumeSlug, slug));
   }, [projectSlug]);
 
   // ---- Pull the next batch as the end approaches ---------------------------
@@ -205,13 +223,20 @@ export const ContinuousReader: React.FC<ContinuousReaderProps> = ({
         <section
           key={chapter.id}
           data-chapter-id={chapter.id}
+          data-chapter-slug={chapter.slug}
+          data-volume-slug={chapter.volumeSlug}
           className={index > 0 ? 'pt-16' : undefined}
           aria-label={chapter.title || `Chapter ${chapter.chapterNumber ?? ''}`}
         >
           <div className="text-center space-y-2 border-b border-slate-200/60 dark:border-slate-800/60 pb-8">
-            {chapter.chapterNumber !== null && chapter.chapterNumber !== undefined && (
+            {/*
+              A prologue is labelled a prologue. Before this it published with
+              no number and so appeared as an untitled chapter, leaving the
+              reader no way to tell what they were looking at.
+            */}
+            {chapterEyebrow(chapter) && (
               <p className="text-xs font-bold uppercase tracking-widest text-slate-400">
-                CHAPTER {chapter.chapterNumber}
+                {chapterEyebrow(chapter)}
               </p>
             )}
             <h1 className="text-3xl font-bold tracking-tight text-slate-900 dark:text-white">

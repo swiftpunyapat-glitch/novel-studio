@@ -6,7 +6,7 @@ import Link from 'next/link';
 import { getProject, getChapters, getVariant, getRevisions } from '@/lib/firebase/firestore';
 import { useAuth } from '@/lib/firebase/auth';
 import { Project, Chapter, DraftVariant, Revision } from '@/types/project';
-import { Send, CheckCircle2, AlertTriangle, ExternalLink, Loader2, Sparkles } from 'lucide-react';
+import { Send, CheckCircle2, AlertTriangle, ExternalLink, Loader2, Sparkles, EyeOff } from 'lucide-react';
 import { Button } from '@/components/ui/Button';
 
 interface ChapterPublishItem {
@@ -24,6 +24,7 @@ export default function ProjectPublishPage() {
   const [items, setItems] = useState<ChapterPublishItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [publishingId, setPublishingId] = useState<string | null>(null);
+  const [unpublishingId, setUnpublishingId] = useState<string | null>(null);
   const [publishResult, setPublishResult] = useState<{ chapterId: string; url: string } | null>(null);
 
   const loadData = useCallback(async () => {
@@ -107,6 +108,53 @@ export default function ProjectPublishPage() {
       alert('Failed to execute publication transaction.');
     } finally {
       setPublishingId(null);
+    }
+  };
+
+  /**
+   * Withdraws a chapter from the public reader.
+   *
+   * Only the public snapshot is removed — the chapter, its variants and its
+   * revisions are untouched — so this is reversible by publishing again, and
+   * the confirmation says so rather than implying the manuscript is at risk.
+   */
+  const handleUnpublish = async (item: ChapterPublishItem) => {
+    if (!project || !user) return;
+
+    const title = item.chapter.title || 'this chapter';
+    const confirmed = window.confirm(
+      `Take "${title}" off the public reader?
+
+` +
+        'Readers will no longer be able to open it. Your manuscript, drafts and ' +
+        'revision history are not affected, and you can publish it again at any time.'
+    );
+    if (!confirmed) return;
+
+    setUnpublishingId(item.chapter.id);
+    try {
+      const idToken = await user.getIdToken();
+      const res = await fetch('/api/publishing/unpublish', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${idToken}`,
+        },
+        body: JSON.stringify({ projectId, chapterId: item.chapter.id }),
+      });
+
+      const data = await res.json();
+      if (res.ok && data.success) {
+        setPublishResult(null);
+        await loadData();
+      } else {
+        alert(data.error || 'Could not unpublish this chapter.');
+      }
+    } catch (err) {
+      console.error('Unpublish error', err);
+      alert('Could not unpublish this chapter.');
+    } finally {
+      setUnpublishingId(null);
     }
   };
 
@@ -209,6 +257,24 @@ export default function ProjectPublishPage() {
                     )}
                     {isPublished ? 'Republish Snapshot' : 'Publish Snapshot'}
                   </Button>
+
+                  {isPublished && (
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      disabled={isPublishing || unpublishingId === chapter.id || !user}
+                      onClick={() => handleUnpublish({ chapter, activeVariant, latestRevision })}
+                      className="text-xs text-slate-500 hover:text-red-600 dark:hover:text-red-400"
+                      title="Take this chapter off the public reader"
+                    >
+                      {unpublishingId === chapter.id ? (
+                        <Loader2 className="w-3.5 h-3.5 animate-spin mr-1" />
+                      ) : (
+                        <EyeOff className="w-3.5 h-3.5 mr-1" />
+                      )}
+                      Unpublish
+                    </Button>
+                  )}
                 </div>
               </div>
             );

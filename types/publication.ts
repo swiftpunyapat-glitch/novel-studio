@@ -26,6 +26,14 @@ export interface PublicVolume {
 export interface PublicChapterSnapshot {
   id: string;
   volumeId: string;
+
+  /** Stable public address, copied from the Chapter at publish time. */
+  slug: string;
+  /** The volume's slug, so a chapter URL can be built without a second read. */
+  volumeSlug: string;
+  /** Prologue and Epilogue are labelled as such rather than as chapters. */
+  chapterType: 'prologue' | 'chapter' | 'epilogue';
+
   chapterNumber: number | null;
   title: string;
   subtitle?: string;

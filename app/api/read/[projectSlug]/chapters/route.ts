@@ -90,6 +90,13 @@ export async function GET(
         // only these fields are ever sent to a reader.
         return {
           id: d.id,
+          slug: typeof data.slug === 'string' && data.slug ? data.slug : d.id,
+          volumeSlug:
+            typeof data.volumeSlug === 'string' && data.volumeSlug ? data.volumeSlug : 'volume',
+          chapterType:
+            data.chapterType === 'prologue' || data.chapterType === 'epilogue'
+              ? data.chapterType
+              : 'chapter',
           chapterNumber: data.chapterNumber ?? null,
           title: data.title ?? '',
           subtitle: data.subtitle ?? null,

@@ -77,6 +77,22 @@ export function chaptersAfter<T extends OrderedChapter>(
 }
 
 /**
+ * Route params arrive percent-encoded for non-ASCII, so a Thai slug reaches the
+ * page as "%E0%B8%88..." and would never match the stored value. Decoding is
+ * safe to apply twice: makeSlug strips "%" from a slug, so a decoded slug can
+ * never be re-decoded into something different.
+ */
+export function decodeSlugParam(value: string): string {
+  try {
+    return decodeURIComponent(value);
+  } catch {
+    // A malformed escape sequence is not a slug we have; leave it to fail the
+    // lookup rather than throwing out of a page render.
+    return value;
+  }
+}
+
+/**
  * A published slug is a Firestore document id, and `.doc()` treats a slash as a
  * path separator. Validating here keeps a crafted slug from addressing a
  * different document than the one it names.

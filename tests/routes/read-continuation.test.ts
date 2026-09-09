@@ -125,7 +125,18 @@ describe('Only published fields are sent', () => {
     const res = await call(PUBLIC_SLUG, '?after=c1&limit=1');
     const body = await res.json();
     expect(Object.keys(body.chapters[0]).sort()).toEqual(
-      ['chapterNumber', 'dateText', 'id', 'locationText', 'renderedHtml', 'subtitle', 'title'].sort()
+      [
+        'chapterNumber',
+        'chapterType',
+        'dateText',
+        'id',
+        'locationText',
+        'renderedHtml',
+        'slug',
+        'subtitle',
+        'title',
+        'volumeSlug',
+      ].sort()
     );
   });
 });
