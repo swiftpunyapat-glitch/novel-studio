@@ -66,6 +66,9 @@ function makeDb() {
     return {
       doc: (id?: string) => makeRef(`${path}/${id ?? 'generated_id'}`),
       where: () => ({ limit: () => ({ get: async () => ({ empty: true, docs: [] }) }) }),
+      // The publish route reads every sibling chapter's slug so a new one
+      // cannot collide with an address already in use.
+      select: () => ({ get: async () => ({ empty: true, docs: [] }) }),
     };
   }
 

@@ -84,6 +84,16 @@ export interface Chapter {
   chapterType?: ChapterType;
 
   /**
+   * Stable public address for this chapter.
+   *
+   * Assigned once, on first publish, and never recomputed afterwards — a slug
+   * derived from the title on every read would change the public URL whenever
+   * the author renamed a chapter, breaking every link already shared. Absent
+   * on chapters that have never been published.
+   */
+  slug?: string;
+
+  /**
    * Denormalized word count of the chapter's ACTIVE variant only, maintained
    * for sidebar and dashboard list views so they need not read every variant.
    *

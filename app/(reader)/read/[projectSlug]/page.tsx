@@ -1,6 +1,8 @@
 import Link from 'next/link';
 import { notFound } from 'next/navigation';
 import { adminDb } from '@/lib/firebase/admin';
+import { chapterPath } from '@/lib/publishing/chapter-slug';
+import { chapterEyebrow } from '@/components/reader/ContinuousReader';
 import { BookOpen, FileText, ArrowRight } from 'lucide-react';
 
 export const dynamic = 'force-dynamic';
@@ -63,12 +65,12 @@ export default async function PublicProjectOverviewPage({ params }: PageProps) {
                       {volChapters.map((chap) => (
                         <Link
                           key={chap.id}
-                          href={`/read/${projectSlug}/vol/${chap.id}`}
+                          href={chapterPath(projectSlug, chap.volumeSlug || 'volume', chap.slug || chap.id)}
                           className="p-4 flex items-center justify-between hover:bg-slate-50 dark:hover:bg-slate-800/50 transition-colors group"
                         >
                           <div>
                             <h4 className="text-sm font-medium text-slate-900 dark:text-white group-hover:text-indigo-600 transition-colors">
-                              {chap.chapterNumber ? `Chapter ${chap.chapterNumber}: ` : ''}
+                              {chapterEyebrow(chap) ? `${chapterEyebrow(chap)}: ` : ''}
                               {chap.title}
                             </h4>
                             {chap.subtitle && <p className="text-xs text-slate-400 mt-0.5">{chap.subtitle}</p>}
@@ -85,12 +87,12 @@ export default async function PublicProjectOverviewPage({ params }: PageProps) {
                 {chapters.map((chap) => (
                   <Link
                     key={chap.id}
-                    href={`/read/${projectSlug}/vol/${chap.id}`}
+                    href={chapterPath(projectSlug, chap.volumeSlug || 'volume', chap.slug || chap.id)}
                     className="p-4 flex items-center justify-between hover:bg-slate-50 dark:hover:bg-slate-800/50 transition-colors group"
                   >
                     <div>
                       <h4 className="text-sm font-medium text-slate-900 dark:text-white group-hover:text-indigo-600 transition-colors">
-                        {chap.chapterNumber ? `Chapter ${chap.chapterNumber}: ` : ''}
+                        {chapterEyebrow(chap) ? `${chapterEyebrow(chap)}: ` : ''}
                         {chap.title}
                       </h4>
                       {chap.subtitle && <p className="text-xs text-slate-400 mt-0.5">{chap.subtitle}</p>}
